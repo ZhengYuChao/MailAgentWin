@@ -1,0 +1,148 @@
+{
+    "source": {
+        "type": "automation",
+        "automation_id": "32915375-830d-8086-a4ec-004d1a08c392",
+        "action_id": "32c15375-830d-8065-8fbf-005a31068639",
+        "event_id": "92f4a5ce-bec9-43c6-9aa0-6535421497bd",
+        "user_id": "19dd872b-594c-819b-851a-00022d3ec083",
+        "attempt": 1
+    },
+    "data": {
+        "object": "page",
+        "id": "35d15375-830d-8135-b24f-f3a5d9e3ff45",
+        "created_time": "2026-05-11T22:01:00.000Z",
+        "last_edited_time": "2026-05-11T22:18:00.000Z",
+        "created_by": {
+            "object": "user",
+            "id": "32015375-830d-81ba-a05b-002708968ef2"
+        },
+        "last_edited_by": {
+            "object": "user",
+            "id": "19dd872b-594c-819b-851a-00022d3ec083"
+        },
+        "cover": null,
+        "icon": {
+            "type": "emoji",
+            "emoji": "📧"
+        },
+        "parent": {
+            "type": "data_source_id",
+            "data_source_id": "15b15375-830d-83e1-ba55-07aca75e9f5d",
+            "database_id": "23c15375-830d-826d-89fb-012c5cf9ec12"
+        },
+        "in_trash": false,
+        "is_archived": false,
+        "is_locked": false,
+        "properties": {
+            "Message ID": {
+                "id": "lmwS",
+                "type": "rich_text",
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "<1d84d6f8.7c.19e190ee362.Coremail.test_user@example.com>",
+                            "link": null
+                        },
+                        "annotations": {
+                            "bold": false,
+                            "italic": false,
+                            "strikethrough": false,
+                            "underline": false,
+                            "code": false,
+                            "color": "default"
+                        },
+                        "plain_text": "<1d84d6f8.7c.19e190ee362.Coremail.test_user@example.com>",
+                        "href": null
+                    }
+                ]
+            },
+            "Subject": {
+                "id": "title",
+                "type": "title",
+                "title": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "证件照提交",
+                            "link": null
+                        },
+                        "annotations": {
+                            "bold": false,
+                            "italic": false,
+                            "strikethrough": false,
+                            "underline": false,
+                            "code": false,
+                            "color": "default"
+                        },
+                        "plain_text": "证件照提交",
+                        "href": null
+                    }
+                ]
+            },
+            "Mailbox": {
+                "id": "qI%3Db",
+                "type": "select",
+                "select": {
+                    "id": "5551e42c-7fdc-4737-87ea-cfc4071f7dae",
+                    "name": "Inbox",
+                    "color": "yellow"
+                }
+            },
+            "Reply Suggestion": {
+                "id": "Me%5BU",
+                "type": "rich_text",
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "hi, \n    Understood. I will process it as soon as possible.\n\nBest regards,\nUser",
+                            "link": null
+                        },
+                        "annotations": {
+                            "bold": false,
+                            "italic": false,
+                            "strikethrough": false,
+                            "underline": false,
+                            "code": false,
+                            "color": "default"
+                        },
+                        "plain_text": "hi, \n    Understood. I will process it as soon as possible.\n\nBest regards,\nUser",
+                        "href": null
+                    }
+                ]
+            },
+            "ID": {
+                "id": "Nsxg",
+                "type": "number",
+                "number": null
+            },
+            "Thread ID": {
+                "id": "%3FRgC",
+                "type": "rich_text",
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "E116D34D72471F4A9EAB25E7CC9AB5D0",
+                            "link": null
+                        },
+                        "annotations": {
+                            "bold": false,
+                            "italic": false,
+                            "strikethrough": false,
+                            "underline": false,
+                            "code": false,
+                            "color": "default"
+                        },
+                        "plain_text": "E116D34D72471F4A9EAB25E7CC9AB5D0",
+                        "href": null
+                    }
+                ]
+            }
+        },
+        "url": "https://www.notion.so/35d15375830d8135b24ff3a5d9e3ff45",
+        "public_url": null,
+        "request_id": "6a0e42c7-9788-4ea4-a500-22c319c686f8"
+    }
+}

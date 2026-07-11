@@ -1,0 +1,32 @@
+# Environment variables
+.env
+
+# Python build/cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Notion Auth state (Contains cookies and session tokens - SENSITIVE!)
+notion_auth.json
+user_agent.txt
+
+# Local databases and backups
+data/*.db
+data/*.bak
+data/*.db-journal
+
+# Logs and screenshots
+logs/
+*.log
+*.png
+
+# Webhook payload logs and other temporary scratch files
+scratch/webhook_history.jsonl
+scratch/*.json
+scratch/*.jsonl
+scratch/*.html

@@ -1,0 +1,15 @@
+pywin32>=306
+python-dotenv
+pydantic-settings
+pydantic>=2.0
+aiohttp
+requests
+loguru
+beautifulsoup4
+lxml
+html2text
+notion-client
+pandas
+openpyxl
+playwright>=1.40.0
+tqdm
