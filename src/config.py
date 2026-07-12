@@ -1,0 +1,249 @@
+from pydantic_settings import BaseSettings
+from pydantic import Field, ConfigDict
+from typing import List
+
+class Config(BaseSettings):
+    """配置类"""
+
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Notion 配置
+    notion_token: str = Field(..., env="NOTION_TOKEN")
+    email_database_id: str = Field(..., env="EMAIL_DATABASE_ID")
+
+    # 用户配置
+    user_email: str = Field(..., env="USER_EMAIL")
+    mail_account_name: str = Field(default="Exchange", env="MAIL_ACCOUNT_NAME")
+    mail_account_url_prefix: str = Field(default="ews://", env="MAIL_ACCOUNT_URL_PREFIX", description="SQLite 账户 URL 前缀过滤（如 ews:// 只匹配 Exchange）")
+    mail_inbox_name: str = Field(default="收件箱", env="MAIL_INBOX_NAME")
+
+    # 日志配置
+    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    log_file: str = Field(default="logs/sync.log", env="LOG_FILE")
+
+    # 附件配置
+    max_attachment_size: int = Field(default=20971520, env="MAX_ATTACHMENT_SIZE")  # 20MB (Notion limit)
+
+    # 日历同步配置
+    calendar_database_id: str = Field(default="", env="CALENDAR_DATABASE_ID")
+    calendar_name: str = Field(default="日历", env="CALENDAR_NAME")
+    calendar_check_interval: int = Field(default=300, env="CALENDAR_CHECK_INTERVAL")  # 5分钟
+    calendar_past_days: int = Field(default=7, env="CALENDAR_PAST_DAYS")
+    calendar_future_days: int = Field(default=90, env="CALENDAR_FUTURE_DAYS")
+    calendar_sync_mode: str = Field(
+        default="applescript",
+        env="CALENDAR_SYNC_MODE",
+        description="日历同步模式: applescript (更稳定，推荐) / eventkit (更快但可能丢失权限)"
+    )
+
+    # 混合同步模式配置
+    sync_mode: str = Field(default="hybrid", env="SYNC_MODE", description="同步模式: hybrid / applescript_only")
+    radar_poll_interval: int = Field(default=5, env="RADAR_POLL_INTERVAL", description="雷达轮询间隔(秒)")
+    reverse_sync_interval: int = Field(default=30, env="REVERSE_SYNC_INTERVAL", description="反向同步间隔(秒)")
+    sync_date_mode: str = Field(default="relative", env="SYNC_DATE_MODE", description="日期模式: fixed / relative")
+    sync_start_date: str = Field(default="2026-01-01", env="SYNC_START_DATE", description="fixed模式: 只同步此日期之后的邮件")
+    sync_lookback_days: int = Field(default=14, env="SYNC_LOOKBACK_DAYS", description="relative模式: 只同步最近N天的邮件")
+    startup_lookback_days: int = Field(default=1, env="STARTUP_LOOKBACK_DAYS", description="启动时自动补查的天数")
+    health_check_interval: int = Field(default=3600, env="HEALTH_CHECK_INTERVAL", description="健康检查间隔(秒)")
+    sync_store_db_path: str = Field(default="data/sync_store.db", env="SYNC_STORE_DB_PATH", description="同步状态存储SQLite数据库路径")
+    notion_ai_trigger_historical: bool = Field(default=False, env="NOTION_AI_TRIGGER_HISTORICAL", description="历史邮件补查时是否也触发 Notion AI 自动化")
+
+    # 多邮箱同步配置
+    sync_mailboxes: str = Field(
+        default="收件箱",
+        env="SYNC_MAILBOXES",
+        description="要同步的邮箱列表，逗号分隔。例如: 收件箱,已发送"
+    )
+    mail_sent_name: str = Field(default="已发送", env="MAIL_SENT_NAME", description="发件箱名称（AppleScript用）")
+
+    # 飞书通知配置
+    feishu_app_id: str = Field(default="", env="FEISHU_APP_ID", description="飞书应用 App ID")
+    feishu_app_secret: str = Field(default="", env="FEISHU_APP_SECRET", description="飞书应用 App Secret")
+    feishu_chat_id: str = Field(default="", env="FEISHU_CHAT_ID", description="飞书群聊 chat_id")
+    feishu_webhook_url: str = Field(default="", env="FEISHU_WEBHOOK_URL", description="飞书自定义机器人 webhook URL（备用）")
+    feishu_webhook_secret: str = Field(default="", env="FEISHU_WEBHOOK_SECRET", description="飞书 webhook 签名密钥（可选）")
+    feishu_notify_enabled: bool = Field(default=False, env="FEISHU_NOTIFY_ENABLED", description="是否启用飞书通知")
+
+    # Redis 事件消费配置（P3: Notion→Mail 方向）
+    redis_url: str = Field(default="", env="REDIS_URL", description="Redis 连接 URL（如 redis://localhost:6379）")
+    redis_db: int = Field(default=2, env="REDIS_DB", description="Redis DB 号（默认 2，MailAgent 专用）")
+    redis_events_enabled: bool = Field(default=False, env="REDIS_EVENTS_ENABLED", description="是否启用 Redis 事件消费")
+
+    # 初始化同步配置
+    init_batch_size: int = Field(default=100, env="INIT_BATCH_SIZE", description="初始化时每批获取邮件数量")
+
+    applescript_timeout: int = Field(default=200, env="APPLESCRIPT_TIMEOUT", description="AppleScript超时时间(秒)")
+
+    # 看板统计上报配置
+    stats_report_url: str = Field(default="", env="STATS_REPORT_URL", description="看板统计上报 URL（如 https://mailagent.chenge.ink/api/stats/report）")
+    stats_report_interval: int = Field(default=60, env="STATS_REPORT_INTERVAL", description="统计上报间隔(秒)")
+    stats_report_token: str = Field(default="", env="STATS_REPORT_TOKEN", description="上报认证 token（默认复用 WEBHOOK_SECRET）")
+
+    # 飞书告警机器人配置
+    alert_feishu_webhook_url: str = Field(default="", env="ALERT_FEISHU_WEBHOOK_URL", description="飞书告警机器人 webhook URL")
+    alert_feishu_webhook_secret: str = Field(default="", env="ALERT_FEISHU_WEBHOOK_SECRET", description="飞书告警 webhook 签名密钥")
+    alert_enabled: bool = Field(default=False, env="ALERT_ENABLED", description="是否启用飞书告警")
+    alert_levels: str = Field(default="critical,error,warning", env="ALERT_LEVELS", description="告警级别（逗号分隔）")
+    alert_cooldown: int = Field(default=300, env="ALERT_COOLDOWN", description="同类告警冷却时间(秒)")
+    alert_dead_letter_threshold: int = Field(default=5, env="ALERT_DEAD_LETTER_THRESHOLD", description="dead_letter 累积告警阈值")
+
+    # Office 文档转换配置
+    office_convert_enabled: bool = Field(default=True, env="OFFICE_CONVERT_ENABLED", description="是否启用 Office 附件转换（docx/pptx→PDF, xlsx→CSV）")
+
+    # 防锁屏保活配置
+    keep_alive_enabled: bool = Field(default=False, env="KEEP_ALIVE_ENABLED", description="是否启用防锁屏保活")
+    keep_alive_dim: bool = Field(default=True, env="KEEP_ALIVE_DIM", description="保活时是否调低屏幕亮度")
+
+    # 项目周报同步（外挂模块）
+    project_progress_sync_enabled: bool = Field(
+        default=False,
+        env="PROJECT_PROGRESS_SYNC_ENABLED",
+        description="项目周报同步模块的总开关（CLI + 钩子）。默认关。",
+    )
+    project_progress_auto_sync_enabled: bool = Field(
+        default=False,
+        env="PROJECT_PROGRESS_AUTO_SYNC_ENABLED",
+        description="new_watcher 检测到项目周报邮件后是否自动触发同步",
+    )
+    project_progress_sender: str = Field(
+        default="",
+        env="PROJECT_PROGRESS_SENDER",
+        description="项目周报发件人 email（子串匹配，不区分大小写）。需在 .env 显式配置。",
+    )
+    project_progress_subject_pattern: str = Field(
+        default="",
+        env="PROJECT_PROGRESS_SUBJECT_PATTERN",
+        description="项目周报邮件标题正则。需在 .env 显式配置。",
+    )
+    project_progress_database_id: str = Field(
+        default="",
+        env="PROJECT_PROGRESS_DATABASE_ID",
+        description="Notion 项目进度库 ID（空则同步功能禁用）",
+    )
+    project_progress_filter_bu: str = Field(
+        default="TPS-ENBU",
+        env="PROJECT_PROGRESS_FILTER_BU",
+        description="过滤保留的 BU 值",
+    )
+
+    # LLM Agent 配置
+    llm_agent_enabled: bool = Field(
+        default=False, env="LLM_AGENT_ENABLED",
+        description="是否启用本地 LLM 处理邮件 AI 字段（取代 Notion Custom Agent）",
+    )
+    llm_api_base: str = Field(
+        default="https://crs.chenge.ink/api", env="LLM_API_BASE",
+        description="Anthropic Messages 兼容网关 base url",
+    )
+    llm_api_key: str = Field(
+        default="", env="LLM_API_KEY",
+        description="Anthropic 网关 API Key",
+    )
+    llm_model: str = Field(
+        default="claude-sonnet-4-6", env="LLM_MODEL",
+        description="调用的模型名",
+    )
+    llm_max_tokens: int = Field(
+        default=4096, env="LLM_MAX_TOKENS", description="单次生成 max_tokens",
+    )
+    llm_timeout_sec: int = Field(
+        default=60, env="LLM_TIMEOUT_SEC", description="LLM 请求超时（秒）",
+    )
+    llm_inbox_prompt_path: str = Field(
+        default="prompts/email_inbox.md", env="LLM_INBOX_PROMPT_PATH",
+        description="收件箱 prompt md 路径",
+    )
+    llm_sent_prompt_path: str = Field(
+        default="prompts/email_sent.md", env="LLM_SENT_PROMPT_PATH",
+        description="发件箱 prompt md 路径",
+    )
+    llm_context_page_id: str = Field(
+        default="", env="LLM_CONTEXT_PAGE_ID",
+        description="Email Agent Context Notion 页面 ID",
+    )
+    llm_context_cache_ttl_sec: int = Field(
+        default=1800, env="LLM_CONTEXT_CACHE_TTL_SEC",
+        description="context markdown 内存缓存 TTL（秒）",
+    )
+    llm_daily_digest_database_id: str = Field(
+        default="", env="LLM_DAILY_DIGEST_DATABASE_ID",
+        description="Daily Email Digests 库 ID",
+    )
+    llm_daily_digest_report_date_prop: str = Field(
+        default="Report Date", env="LLM_DAILY_DIGEST_REPORT_DATE_PROP",
+        description="Daily Digest 库里用于匹配归属日期的 date 字段名",
+    )
+    llm_max_retries: int = Field(
+        default=3, env="LLM_MAX_RETRIES",
+        description="LLM 调用失败重试次数",
+    )
+    llm_body_max_chars: int = Field(
+        default=12000, env="LLM_BODY_MAX_CHARS",
+        description="邮件正文送入 LLM 的最大字符数",
+    )
+    llm_cache_enabled: bool = Field(
+        default=True, env="LLM_CACHE_ENABLED",
+        description="是否在 system prompt 末尾放 cache_control 断点",
+    )
+    llm_cache_ttl: str = Field(
+        default="1h", env="LLM_CACHE_TTL",
+        description="显式 cache TTL",
+    )
+
+    # Notion AI 自动化与防抖配置
+    notion_ai_batch_size: int = Field(
+        default=5, env="NOTION_AI_BATCH_SIZE",
+        description="每同步多少封新邮件强制触发一次 Notion AI"
+    )
+    notion_ai_max_chats_per_session: int = Field(
+        default=10, env="NOTION_AI_MAX_CHATS_PER_SESSION",
+        description="同一个会话最多调用多少次后强制开启新会话并重启浏览器"
+    )
+    debounce_quiet_sec: int = Field(
+        default=120, env="DEBOUNCE_QUIET_SEC",
+        description="新邮件同步到 Notion 后，静默等待多少秒没有新邮件才触发 Notion AI"
+    )
+    debounce_force_sec: int = Field(
+        default=1800, env="DEBOUNCE_FORCE_SEC",
+        description="最大等待时间（秒），即使一直有新邮件，达到此时间也强制触发一次 Notion AI"
+    )
+    notion_ai_page_url: str = Field(
+        default="", env="NOTION_AI_PAGE_URL",
+        description="用于触发 Notion AI 的 Notion 页面 URL（如：数据库页面 URL 或专用任务页面 URL）"
+    )
+    notion_ai_fallback_wait_sec: int = Field(
+        default=120, env="NOTION_AI_FALLBACK_WAIT_SEC",
+        description="Notion AI 生成未检测到停止按钮时，保守等待的秒数"
+    )
+    notion_ai_wait_timeout: int = Field(
+        default=600, env="NOTION_AI_WAIT_TIMEOUT",
+        description="Notion AI 等待当前任务完成的最大超时时间（秒）"
+    )
+    ai_model: str = Field(
+        default="Auto", env="AI_MODEL",
+        description="Notion AI 自动选择的模型，默认为 Auto"
+    )
+    reverse_proxy: str = Field(
+        default="", env="REVERSE_PROXY",
+        description="内网穿透服务商: ngrok / cloudflare, 为空则不启用"
+    )
+    
+    # Notion Automation Webhook 配置
+    notion_action_create_draft: str = Field(
+        default="35d15375-830d-806b-b799-005aa8637e7e", env="NOTION_ACTION_CREATE_DRAFT",
+        description="Notion 'Create Draft' 按钮的 action_id"
+    )
+    notion_action_reply_all: str = Field(
+        default="32c15375-830d-8065-8fbf-005a31068639", env="NOTION_ACTION_REPLY_ALL",
+        description="Notion 'Reply All / Send Draft' 按钮的 action_id"
+    )
+    notion_action_reply: str = Field(
+        default="39915375-830d-8079-8c98-005af593110f", env="NOTION_ACTION_REPLY",
+        description="Notion 'Reply' 按钮的 action_id"
+    )
+
+config = Config()
