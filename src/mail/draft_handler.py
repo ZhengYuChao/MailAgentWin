@@ -1,7 +1,42 @@
 import pythoncom
+import threading
+import time
+
 import win32com.client
+import win32con
+import win32gui
 from loguru import logger
 from src.config import config
+
+
+def _hide_outlook_progress_windows(duration: float = 15.0, interval: float = 0.2):
+    """
+    后台轮询，自动隐藏 Outlook 弹出的 "Publishing..." / "正在发布..." 进度窗口。
+    在 Send() / Save() 之前启动，持续 duration 秒后自动退出。
+    """
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        try:
+            def _enum_callback(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd):
+                    return True
+                title = win32gui.GetWindowText(hwnd) or ""
+                # 匹配 Outlook 同步进度窗口的常见标题
+                if any(kw in title for kw in ("Publishing", "发布", "Sending", "正在发送")):
+                    win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+                    logger.debug(f"Hidden Outlook progress window: '{title}'")
+                return True
+            win32gui.EnumWindows(_enum_callback, None)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def _start_progress_hider(duration: float = 15.0):
+    """启动后台守护线程来隐藏 Outlook 进度窗口"""
+    t = threading.Thread(target=_hide_outlook_progress_windows, args=(duration,), daemon=True, name="OutlookProgressHider")
+    t.start()
+    return t
 
 def execute_draft_action(payload: dict):
     """
@@ -161,15 +196,51 @@ def execute_draft_action(payload: dict):
         else:
             reply.Body = reply_suggestion + "\n\n" + getattr(reply, "Body", "")
 
-        # 3. Final Action: Send or Save
-        if final_action == "save":
-            reply.Save()
-            logger.info(f"✅ Draft created successfully (action_id: {action_id}).")
-        else: # "reply" or "reply_all"
-            reply.Send()
-            logger.info(f"✅ Email sent successfully (action_id: {action_id}).")
+        # 3. Final Action: Send or Save (with configurable timeout)
+        publish_timeout = config.outlook_publish_timeout_sec
+        
+        # 调整进度窗口隐藏线程的持续时间，至少覆盖超时时间
+        hider_duration = max(15.0, float(publish_timeout)) if publish_timeout > 0 else 15.0
+        _start_progress_hider(hider_duration)  # 隐藏 Outlook "Publishing..." 弹窗
+        
+        publish_result = {"success": False, "error": None}
+        
+        def _do_publish():
+            """在子线程中执行 Send/Save，以便可以超时中断等待"""
+            try:
+                if final_action == "save":
+                    reply.Save()
+                else:
+                    reply.Send()
+                publish_result["success"] = True
+            except Exception as e:
+                publish_result["error"] = e
+        
+        publish_thread = threading.Thread(target=_do_publish, daemon=True, name="OutlookPublish")
+        publish_thread.start()
+        
+        # 等待发布完成，或超时退出
+        effective_timeout = publish_timeout if publish_timeout > 0 else None
+        publish_thread.join(timeout=effective_timeout)
+        
+        if publish_thread.is_alive():
+            # 超时：Publishing 仍在进行中
+            action_label = "Save" if final_action == "save" else "Send"
+            logger.warning(
+                f"⚠️ Outlook {action_label}() timed out after {publish_timeout}s. "
+                f"Abandoning wait for publishing (action_id: {action_id}). "
+                f"The operation may still complete in the background."
+            )
+        elif publish_result["error"]:
+            raise publish_result["error"]
+        else:
+            if final_action == "save":
+                logger.info(f"✅ Draft created successfully (action_id: {action_id}).")
+            else:
+                logger.info(f"✅ Email sent successfully (action_id: {action_id}).")
 
     except Exception as e:
         logger.error(f"Failed to process Outlook email: {e}")
     finally:
         pythoncom.CoUninitialize()
+

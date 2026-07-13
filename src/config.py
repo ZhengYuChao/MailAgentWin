@@ -78,6 +78,12 @@ class Config(BaseSettings):
 
     applescript_timeout: int = Field(default=200, env="APPLESCRIPT_TIMEOUT", description="AppleScript超时时间(秒)")
 
+    # Outlook COM Publishing 超时配置
+    outlook_publish_timeout_sec: int = Field(
+        default=600, env="OUTLOOK_PUBLISH_TIMEOUT_SEC",
+        description="Outlook COM Send/Save 操作的超时时间（秒），超时后放弃此次发送但不影响其他流程。设为 0 表示不限时。"
+    )
+
     # 看板统计上报配置
     stats_report_url: str = Field(default="", env="STATS_REPORT_URL", description="看板统计上报 URL（如 https://mailagent.chenge.ink/api/stats/report）")
     stats_report_interval: int = Field(default=60, env="STATS_REPORT_INTERVAL", description="统计上报间隔(秒)")

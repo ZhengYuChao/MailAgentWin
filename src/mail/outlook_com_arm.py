@@ -6,6 +6,7 @@ Outlook COM Arm: 替代 macOS 的 AppleScript Arm。
 from __future__ import annotations
 
 import logging
+import time
 import pythoncom
 import win32com.client
 from dataclasses import dataclass, asdict
@@ -51,11 +52,32 @@ class FetchedMail:
     raw_headers: str
 
 class OutlookComArm:
-    def __init__(self):
+    # Outlook COM 常见可重试错误码（Outlook 正忙/初始化中）
+    _BUSY_HRESULTS = {-2147418111, -2147023170}  # RPC_E_CALL_REJECTED, RPC_S_CALL_FAILED
+
+    def __init__(self, max_wait: int = 60):
         # 必须在使用 COM 的线程里调用一次
         pythoncom.CoInitialize()
-        self.app = win32com.client.Dispatch("Outlook.Application")
-        self.ns = self.app.GetNamespace("MAPI")
+        # 带重试的 Outlook COM 连接，容忍启动期间 Outlook 正在初始化
+        start = time.time()
+        interval = 3.0
+        while True:
+            try:
+                self.app = win32com.client.Dispatch("Outlook.Application")
+                self.ns = self.app.GetNamespace("MAPI")
+                # 验证 MAPI 连接可用
+                self.ns.GetDefaultFolder(6)  # olFolderInbox
+                break
+            except Exception as e:
+                hr = getattr(e, 'args', (None,))[0] if e.args else None
+                elapsed = time.time() - start
+                if isinstance(hr, int) and hr in self._BUSY_HRESULTS and elapsed < max_wait:
+                    logger.warning(f"Outlook busy during init ({e}), retrying in {interval:.0f}s... "
+                                   f"({elapsed:.0f}s/{max_wait}s)")
+                    time.sleep(interval)
+                    interval = min(interval * 1.5, 15)
+                else:
+                    raise
 
     def close(self):
         pythoncom.CoUninitialize()
