@@ -1,11 +1,11 @@
-任务：按规则批量处理 5 封目标邮件。
+任务：按规则批量处理 2 封目标邮件。
 请严格遵循《邮件批量处理指令》的规则，全自动执行，无需过程确认。
 
 1. 邮件筛选与处理
 在 《我的邮件｜[Adam] Email》这个page中（而不是去连接notion email）筛选目标邮件，范围包括：
 - Processing Status = 未处理 / AI Reviewed；
 - 或 Processing Status = 已同步，但关键字段缺失。
-将以上目标邮件按 Date 倒序排序，仅处理前 5 封。
+将以上目标邮件按 Date 倒序排序，仅处理前面提到的邮件数。
 
 处理要求：
 - 逐封读取完整邮件内容，包括 Subject、正文、From、To、CC、Date、Thread ID、附件、Flag 等。

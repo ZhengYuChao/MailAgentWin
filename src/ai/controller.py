@@ -19,8 +19,8 @@ class AIController:
         self._uploaded_in_batch = 0
         self._ai_chats_in_session = 0
         
-        # 并发控制
-        self._is_running = False
+        # 并发控制 —— 使用 asyncio.Lock 确保 AI 触发严格串行排队
+        self._lock = asyncio.Lock()
         
         # Playwright 持续化实例
         self.playwright = None
@@ -102,17 +102,16 @@ class AIController:
             logger.info(f"⏳ Sync completed. Notion AI trigger scheduled (waiting {config.debounce_quiet_sec}s quiet period)...")
 
     async def execute_ai_trigger(self, subject: str, action: str = None):
-        """处理会话上限逻辑，并调用底层的无头浏览器"""
-        if self._is_running:
-            logger.warning("⚠️ Notion AI is already running, waiting for the current task to finish before executing this trigger...")
-            wait_start = time.time()
-            while self._is_running:
-                if time.time() - wait_start > config.notion_ai_wait_timeout:
-                    logger.error(f"❌ Timeout waiting for Notion AI task to finish ({config.notion_ai_wait_timeout}s), forcing state reset and continuing...")
-                    break
-                await asyncio.sleep(2)
+        """处理会话上限逻辑，并调用底层的无头浏览器。使用 asyncio.Lock 确保多个触发严格串行排队。"""
+        if self._lock.locked():
+            logger.warning(f"⚠️ Notion AI is already running, queuing this trigger: '{subject}' (will execute after current task finishes)...")
 
-        self._is_running = True
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=config.notion_ai_wait_timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Timeout waiting for Notion AI lock ({config.notion_ai_wait_timeout}s), skipping trigger: '{subject}'")
+            return
+
         try:
             self._ai_chats_in_session += 1
             force_new_chat = self._ai_chats_in_session > config.notion_ai_max_chats_per_session
@@ -127,7 +126,7 @@ class AIController:
                 import traceback
                 logger.error(f"❌ Failed to trigger Notion AI:\n{traceback.format_exc()}")
         finally:
-            self._is_running = False
+            self._lock.release()
 
     async def debounce_loop(self):
         """后台防抖循环：监听静默期和强制时间间隔，触发 Notion AI"""
