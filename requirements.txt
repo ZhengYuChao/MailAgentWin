@@ -13,3 +13,4 @@ pandas
 openpyxl
 playwright>=1.40.0
 tqdm
+playwright-stealth>=2.0.0

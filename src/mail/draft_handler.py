@@ -203,18 +203,31 @@ def execute_draft_action(payload: dict):
         hider_duration = max(15.0, float(publish_timeout)) if publish_timeout > 0 else 15.0
         _start_progress_hider(hider_duration)  # 隐藏 Outlook "Publishing..." 弹窗
         
+        # 将 reply 对象封送到子线程
+        stream = pythoncom.CoMarshalInterThreadInterfaceInStream(
+            pythoncom.IID_IDispatch,
+            reply._oleobj_
+        )
+
         publish_result = {"success": False, "error": None}
         
         def _do_publish():
             """在子线程中执行 Send/Save，以便可以超时中断等待"""
+            pythoncom.CoInitialize()
             try:
+                # 在子线程中解封对象
+                unmarshaled_reply = win32com.client.Dispatch(
+                    pythoncom.CoGetInterfaceAndReleaseStream(stream, pythoncom.IID_IDispatch)
+                )
                 if final_action == "save":
-                    reply.Save()
+                    unmarshaled_reply.Save()
                 else:
-                    reply.Send()
+                    unmarshaled_reply.Send()
                 publish_result["success"] = True
             except Exception as e:
                 publish_result["error"] = e
+            finally:
+                pythoncom.CoUninitialize()
         
         publish_thread = threading.Thread(target=_do_publish, daemon=True, name="OutlookPublish")
         publish_thread.start()

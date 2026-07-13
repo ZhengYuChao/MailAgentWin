@@ -1,7 +1,9 @@
 import os
 import asyncio
 import time
+import random
 from loguru import logger
+from playwright_stealth import Stealth
 from src.config import config
 
 class AIController:
@@ -50,15 +52,20 @@ class AIController:
                 logger.error(f"❌ Auth state file does not exist: {auth_state_path}. Please run python notion_auth.py to login first!")
                 return False
                 
-            context_args = {"storage_state": auth_state_path}
+            context_args = {
+                "storage_state": auth_state_path,
+                "viewport": {"width": 1920, "height": 1080},
+                "locale": "zh-CN",
+                "timezone_id": "Asia/Shanghai"
+            }
             if os.path.exists(user_agent_path):
                 with open(user_agent_path, "r", encoding="utf-8") as f:
                     context_args["user_agent"] = f.read().strip()
                     
             self.context = await self.browser.new_context(**context_args)
-            await self.context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
             self.context.set_default_timeout(60000)
             self.page = await self.context.new_page()
+            await Stealth().apply_stealth_async(self.page)
             
             page_url = config.notion_ai_page_url
             if not page_url:
@@ -235,8 +242,8 @@ class AIController:
                             logger.info(f"✅ Current model is already '{target_model_name}', no switch needed.")
                         else:
                             # 点击展开模型下拉菜单
-                            await trigger.click()
-                            await asyncio.sleep(1.5)
+                            await trigger.click(delay=random.randint(50, 150))
+                            await asyncio.sleep(random.uniform(1.2, 2.0))
                             
                             # 在展开的下拉菜单中寻找目标模型
                             # 使用多种方式匹配菜单项
@@ -258,8 +265,8 @@ class AIController:
                             
                             if menu_found:
                                 logger.info(f"✅ Found target model '{target_model_name}' in dropdown menu, selecting...")
-                                await menu_item.click()
-                                await asyncio.sleep(0.5)
+                                await menu_item.click(delay=random.randint(50, 150))
+                                await asyncio.sleep(random.uniform(0.5, 1.0))
                             else:
                                 logger.warning(f"⚠️ Target model '{target_model_name}' not found in dropdown menu, keeping current model.")
                                 # 截图辅助调试
@@ -295,22 +302,28 @@ class AIController:
                 
             # 3. 输入 prompt 并发送
             logger.info("✍️ Typing prompt (simulating keyboard input)...")
-            await chat_input.click()
-            await asyncio.sleep(0.5)
+            await chat_input.click(delay=random.randint(50, 150))
+            await asyncio.sleep(random.uniform(0.3, 0.8))
             
-            await page.keyboard.insert_text(prompt_text)
-            await asyncio.sleep(1.5)
+            # 模拟人类打字
+            if len(prompt_text) > 50:
+                await page.keyboard.insert_text(prompt_text)
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+            else:
+                for char in prompt_text:
+                    await page.keyboard.type(char, delay=random.randint(30, 80))
+                await asyncio.sleep(random.uniform(0.5, 1.0))
             
             logger.info("🚀 Submitting to Notion AI...")
             submit_btn = page.locator("[aria-label*='Submit' i], [aria-label*='Send' i]").first
             if await submit_btn.is_visible():
-                await submit_btn.click()
+                await submit_btn.click(delay=random.randint(50, 150))
             else:
-                await page.keyboard.press("Enter")
+                await page.keyboard.press("Enter", delay=random.randint(50, 150))
             
             # 4. 等待生成完成
             logger.info("⏳ Waiting for Notion AI response generation to complete...")
-            await asyncio.sleep(3)
+            await asyncio.sleep(random.uniform(2.5, 4.0))
             
             stop_btn = page.locator("[aria-label*='Stop' i]").first
             is_generating = await stop_btn.is_visible()
