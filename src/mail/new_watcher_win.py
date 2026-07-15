@@ -58,15 +58,24 @@ class WindowsWatcher:
                     await asyncio.sleep(0.1)
                     continue
 
-                if task.type == TaskType.MAIL_SYNC and self.mail_sync_semaphore.locked():
-                    # 信号量已满，不消费任务，让其保持在优先级队列中
-                    # 这样如果有更高优先级的任务（如新邮件/Webhook）进来，可以优先出队
-                    await asyncio.sleep(0.1)
-                    continue
+                if task.type == TaskType.MAIL_SYNC and len(self.background_tasks) >= 3:
+                    # 由于我们主要是用 Semaphore 限制 MAIL_SYNC，但 asyncio.Semaphore 在任务 yield 之前
+                    # 并没有真正 lock，这导致瞬间出队大量任务，破坏了优先级队列的设计。
+                    # 这里直接通过限制 background_tasks 中 MAIL_SYNC 相关的任务数，
+                    # 保证优先级队列能够真正发挥作用。
+                    
+                    # 统计正在执行的 MAIL_SYNC 任务数
+                    sync_tasks = getattr(self, "_active_sync_tasks", 0)
+                    if sync_tasks >= 3:
+                        await asyncio.sleep(0.1)
+                        continue
                     
                 # 确认可以处理，正式出队
                 task = global_task_pool.get_task_nowait()
                 logger.info(f"📥 Dequeued task: {task.type.name} (Priority {task.priority_level})")
+                
+                if task.type == TaskType.MAIL_SYNC:
+                    self._active_sync_tasks = getattr(self, "_active_sync_tasks", 0) + 1
                 
                 async def run_task(t=task):
                     try:
@@ -87,6 +96,8 @@ class WindowsWatcher:
                     except Exception as e:
                         logger.error(f"❌ Error executing task {t.type.name}: {e}")
                     finally:
+                        if t.type == TaskType.MAIL_SYNC:
+                            self._active_sync_tasks -= 1
                         global_task_pool.task_done()
 
                 bg_task = asyncio.create_task(run_task())
