@@ -125,20 +125,18 @@ python notion_auth.py
 python main.py
 ```
 
-### 运行后系统的工作流程 (核心改动)：
-1. **启动内网穿透与 API 服务**：
-   *   根据 `REVERSE_PROXY` 配置，[tunnel.py](src/api/tunnel.py) 会启动 Ngrok/Cloudflare 子进程并获取唯一的公网穿透域名。
-   *   [server.py](src/api/server.py) 随即在本地端口 `54321` 启动 Webhook 服务。出于安全考虑，该服务会通过 Host 校验阻断任何非法域名请求。
-2. **初始化 AI 控制器与防抖**：
-   *   [controller.py](src/ai/controller.py) 后台启动静默无头 Chromium 浏览器并加载 `notion_auth.json` 的登录凭证。
-   *   防抖轮询任务开始工作，监控同步进度并计算静默期 (`DEBOUNCE_QUIET_SEC`)。
-3. **启动定时调度与实时雷达**：
-   *   内置的每日调度器会监听时间，当到达 `07:00` 时自动在任务队列中排入早报生成任务。
-   *   COM 事件监听器 ([com_radar.py](src/mail/com_radar.py)) 启动，实时捕捉新收件和新发件。
-4. **历史遗漏补查**：
-   *   主循环启动后，将向后回溯 `STARTUP_LOOKBACK_DAYS` 天数。
-   *   扫描出的所有未同步邮件会以时间戳的倒序（LIFO - 最新优先）自动加入低优先级队列（Priority 3）。
-   *   [new_watcher_win.py](src/mail/new_watcher_win.py) 依靠最大并发为 3 的信号量限制进行邮件的 Notion 同步，并将同步记录写入本地 `data/sync_store.db` 以防重。
+### 运行后系统的工作流程 (多进程架构)：
+1. **Supervisor 启动与监控**：
+   *   `main.py` 拉起 `ProcessManager` 主进程，主进程负责分别启动 **进程 A (MailWorker)** 和 **进程 B (AIWorker)**，并持续监控它们的存活状态，一旦崩溃即按退避策略（5s→60s）自动重启。
+2. **进程 A：内网穿透、API 服务与邮件同步**：
+   *   启动内网穿透服务获取公网域名，并在端口 `54321` 启动 Webhook API 服务。
+   *   启动 COM 雷达监听器实时捕捉新邮件。
+   *   启动核心主循环向后回溯补查，处理邮件实体提取、附件上传，并写入本地数据库。
+   *   **进程间通信 (IPC)**：每当有一封邮件同步成功，进程 A 会通过 `multiprocessing.Queue` 向进程 B 发送一条轻量级的通知信号。
+3. **进程 B：防抖控制、定时任务与 Notion AI 交互**：
+   *   初始化 Playwright 无头浏览器加载凭证。
+   *   监听 IPC 队列中的同步完成信号，根据 `NOTION_AI_BATCH_SIZE` 和 `DEBOUNCE_QUIET_SEC` / `DEBOUNCE_FORCE_SEC` 智能控制 AI 的触发时机。
+   *   内置的每日调度器独立运行，到达 `07:00` 时直接通过 AI 控制器触发早报生成。
 
 ---
 

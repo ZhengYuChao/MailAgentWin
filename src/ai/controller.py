@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import random
+from queue import Empty as QueueEmpty
 from loguru import logger
 from playwright_stealth import Stealth
 from src.config import config
@@ -11,7 +12,11 @@ class AIController:
     Notion AI 控制器。
     集中管理 Playwright 无头浏览器的并发、会话防抖以及生命周期。
     """
-    def __init__(self):
+    def __init__(self, ai_trigger_queue=None, shutdown_event=None):
+        # IPC 通信
+        self._ai_trigger_queue = ai_trigger_queue
+        self._shutdown_event = shutdown_event
+
         # 防抖状态变量
         self._last_email_sync_time = 0.0          # 最后一次成功同步邮件的时间
         self._last_ai_trigger_time = time.time()  # 最后一次触发 AI 的时间
@@ -92,21 +97,6 @@ class AIController:
             
         return True
 
-    def schedule_ai_trigger(self):
-        """当一封新邮件同步成功后调用，调度 AI 触发"""
-        self._uploaded_in_batch += 1
-        logger.info(f"📊 Notion AI Batch Progress: {self._uploaded_in_batch}/{config.notion_ai_batch_size}")
-        
-        if self._uploaded_in_batch >= config.notion_ai_batch_size:
-            logger.info(f"🚨 Batch threshold reached ({config.notion_ai_batch_size}/{config.notion_ai_batch_size} mails). Force triggering Notion AI chat!")
-            self._has_pending_ai_trigger = False
-            self._uploaded_in_batch = 0 # 重置批次计数
-            # 异步触发，不阻塞当前流程
-            asyncio.create_task(self.execute_ai_trigger(f"Batch Threshold ({config.notion_ai_batch_size} mails)"))
-        else:
-            self._last_email_sync_time = time.time()
-            self._has_pending_ai_trigger = True
-            logger.info(f"⏳ Sync completed. Notion AI trigger scheduled (waiting {config.debounce_quiet_sec}s quiet period)...")
 
     async def execute_ai_trigger(self, subject: str, action: str = None):
         """处理会话上限逻辑，并调用底层的无头浏览器。使用 asyncio.Lock 确保多个触发严格串行排队。"""
@@ -136,32 +126,69 @@ class AIController:
             self._lock.release()
 
     async def debounce_loop(self):
-        """后台防抖循环：监听静默期和强制时间间隔，触发 Notion AI"""
+        """后台防抖循环：从 IPC 队列消费 AI 触发信号，结合防抖和强制间隔触发 Notion AI"""
         logger.info("⏰ Notion AI debounce loop started.")
+
+        # 启动时触发一次 AI（处理重启前积压的未处理邮件，保证不漏触发）
+        asyncio.create_task(self.execute_ai_trigger("Startup Batch"))
+
         while True:
             try:
-                await asyncio.sleep(1)  # 每秒检查一次
+                # 检查关停信号
+                if self._shutdown_event and self._shutdown_event.is_set():
+                    logger.info("Shutdown event detected, stopping debounce loop.")
+                    break
+
+                # 非阻塞地排空 IPC 队列
+                drained = 0
+                if self._ai_trigger_queue is not None:
+                    while True:
+                        try:
+                            msg = self._ai_trigger_queue.get_nowait()
+                            drained += 1
+                            self._uploaded_in_batch += 1
+                            self._last_email_sync_time = msg.get("ts", time.time())
+                            self._has_pending_ai_trigger = True
+                        except QueueEmpty:
+                            break
+
+                if drained > 0:
+                    logger.info(f"📊 Received {drained} AI trigger signal(s). "
+                               f"Batch progress: {self._uploaded_in_batch}/{config.notion_ai_batch_size}")
+
                 now = time.time()
-                
-                # 场景 1：如果存在待触发的 AI 任务，且距离最后一次同步已过去 config.debounce_quiet_sec 秒
-                if self._has_pending_ai_trigger and self._last_email_sync_time > 0:
+
+                # 场景 1：批次阈值达到，立即触发
+                if self._uploaded_in_batch >= config.notion_ai_batch_size:
+                    logger.info(f"🚨 Batch threshold reached ({self._uploaded_in_batch}/{config.notion_ai_batch_size} mails). "
+                               f"Force triggering Notion AI chat!")
+                    self._has_pending_ai_trigger = False
+                    self._uploaded_in_batch = 0
+                    asyncio.create_task(self.execute_ai_trigger(
+                        f"Batch Threshold ({config.notion_ai_batch_size} mails)"))
+
+                # 场景 2：静默期到达，触发
+                elif self._has_pending_ai_trigger and self._last_email_sync_time > 0:
                     quiet_elapsed = now - self._last_email_sync_time
                     if quiet_elapsed >= config.debounce_quiet_sec:
-                        logger.info(f"🔔 Quiet period of {config.debounce_quiet_sec}s reached with no new emails. Triggering Notion AI...")
+                        logger.info(f"🔔 Quiet period of {config.debounce_quiet_sec}s reached "
+                                   f"with no new emails. Triggering Notion AI...")
                         self._has_pending_ai_trigger = False
-                        self._uploaded_in_batch = 0 # 防抖触发后清空批次
+                        self._uploaded_in_batch = 0
                         asyncio.create_task(self.execute_ai_trigger("Debounced Batch"))
-                
-                # 场景 2：强制时间间隔。如果距离上一次触发 AI 已过去 config.debounce_force_sec 秒
-                # 无论是否有 pending 邮件，都强制触发一次 AI chat（确保空闲期也定期交互）
+
+                # 场景 3：强制时间间隔（独立于场景 1/2）
                 force_elapsed = now - self._last_ai_trigger_time
                 if force_elapsed >= config.debounce_force_sec:
-                    logger.info(f"🔔 Force trigger interval of {config.debounce_force_sec}s reached. Triggering Notion AI...")
+                    logger.info(f"🔔 Force trigger interval of {config.debounce_force_sec}s reached. "
+                               f"Triggering Notion AI...")
                     self._has_pending_ai_trigger = False
-                    self._uploaded_in_batch = 0 # 触发后清空批次
+                    self._uploaded_in_batch = 0
                     self._last_ai_trigger_time = now
                     asyncio.create_task(self.execute_ai_trigger("Forced Interval Batch"))
-                    
+
+                await asyncio.sleep(1)  # 每秒检查一次
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -379,5 +406,3 @@ class AIController:
         finally:
             self.playwright = None
 
-# 暴露一个全局实例
-global_ai_controller = AIController()

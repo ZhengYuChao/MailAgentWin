@@ -16,12 +16,12 @@ from src.notify.feishu import FeishuNotifier
 from src.models import Email, Attachment, TaskType, TaskPriority
 from src.config import config
 from src.scheduler.task_pool import global_task_pool
-from src.ai.controller import global_ai_controller
+
 
 class WindowsWatcher:
     """Windows 版邮件同步工作者 & 核心事件循环"""
 
-    def __init__(self):
+    def __init__(self, ai_trigger_queue=None, shutdown_event=None):
         self.arm = OutlookComArm()
         self.sync_store = SyncStore()
         self.notion_sync = NotionSync()
@@ -33,6 +33,8 @@ class WindowsWatcher:
             webhook_url=config.feishu_webhook_url
         )
         self.running = False
+        self.ai_trigger_queue = ai_trigger_queue
+        self.shutdown_event = shutdown_event
 
     async def start(self):
         logger.info("🚀 Starting MailAgent Windows Watcher (Central Task Loop)...")
@@ -45,13 +47,17 @@ class WindowsWatcher:
         # 2. 在后台异步补查历史邮件，放入 global_task_pool (Priority 3)
         self.catch_up_task = asyncio.create_task(self._catch_up(days=config.startup_lookback_days))
         
-        # 3. 启动时尝试同步之前未完成的 AI 请求（如果有）
-        asyncio.create_task(global_ai_controller.execute_ai_trigger("Startup Batch"))
         self.background_tasks = set()
         self.mail_sync_semaphore = asyncio.Semaphore(3)  # 最多同时处理 3 个附件上传，防止爆内/过多并发
         
-        # 4. 主循环：处理任务池中的事件
+        # 3. 主循环：处理任务池中的事件
         while self.running:
+            # 检查关停信号
+            if self.shutdown_event is not None and self.shutdown_event.is_set():
+                logger.info("Shutdown event detected, stopping watcher...")
+                self.running = False
+                break
+
             try:
                 task = global_task_pool.peek_task()
                 if not task:
@@ -91,8 +97,7 @@ class WindowsWatcher:
                             async with self.mail_sync_semaphore:
                                 await self.process_mail_sync(entry_id, store_id=store_id, trigger_ai=trigger_ai)
                                 
-                        elif t.type == TaskType.DAILY_SCHEDULE:
-                            await global_ai_controller.execute_ai_trigger("Daily Schedule", action="scheduled_daily_sync")
+
                     except Exception as e:
                         logger.error(f"❌ Error executing task {t.type.name}: {e}")
                     finally:
@@ -190,10 +195,19 @@ class WindowsWatcher:
                 
                 # 同步成功后通知 AI Controller
                 if trigger_ai:
-                    global_ai_controller.schedule_ai_trigger()
+                    self._notify_ai_trigger()
                     
         except Exception as e:
             logger.error(f"Failed to sync email {email.subject}: {e}")
+
+    def _notify_ai_trigger(self):
+        """通知 AIWorker 有新邮件已同步，需要触发 AI 处理"""
+        if self.ai_trigger_queue is None:
+            return
+        try:
+            self.ai_trigger_queue.put_nowait({"type": "email_synced", "ts": time.time()})
+        except Exception as e:
+            logger.error(f"Failed to send AI trigger signal: {e}")
 
     async def _catch_up(self, days: int = 1):
         """启动时补查最近的邮件，赋予低优先级排队"""
