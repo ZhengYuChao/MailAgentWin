@@ -153,6 +153,7 @@ def execute_draft_action(payload: dict):
             logger.warning(f"Failed to re-fetch item by EntryID: {e}")
 
         reply_to = payload.get("reply_to")
+        cc_more = payload.get("cc_more")
         reply = None
         
         if final_action == "reply":
@@ -177,6 +178,17 @@ def execute_draft_action(payload: dict):
                     reply = target_item.Reply()
                 except Exception as e:
                     logger.warning(f"Reply() failed with exception: {e}")
+            
+        if reply is not None and cc_more:
+            try:
+                current_cc = getattr(reply, "CC", "")
+                if current_cc:
+                    reply.CC = str(current_cc) + ";" + cc_more
+                else:
+                    reply.CC = cc_more
+                logger.info(f"Appended additional CC: {cc_more}")
+            except Exception as e:
+                logger.warning(f"Failed to append CC: {e}")
             
         if reply is None:
             logger.warning("Reply() also failed. Creating a NEW mail item as fallback...")

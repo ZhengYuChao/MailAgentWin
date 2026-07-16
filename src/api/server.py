@@ -109,11 +109,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
         reply_suggestion_prop = properties.get("Reply Suggestion")
         draft_action_prop = properties.get("Draft Action")
         from_prop = properties.get("From")
+        cc_more_prop = properties.get("CC More")
 
         message_id = extract_property_text(message_id_prop).strip()
         thread_id = extract_property_text(thread_id_prop).strip()
         reply_suggestion = extract_property_text(reply_suggestion_prop).strip()
         reply_to = extract_property_text(from_prop).strip()
+        cc_more = extract_property_text(cc_more_prop).strip()
 
         invalid_fields = []
         if not message_id: invalid_fields.append("Message ID")
@@ -162,6 +164,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "action": final_action,
             "action_id": action_id,
             "reply_to": reply_to,
+            "cc_more": cc_more,
         }
         
         # 加入任务池（最高优先级 Priority 1），交由不阻塞的主循环去异步分发
