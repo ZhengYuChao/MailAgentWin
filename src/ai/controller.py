@@ -36,66 +36,92 @@ class AIController:
         self.page = None
 
     async def _ensure_browser(self):
-        if not self.playwright:
-            from playwright.async_api import async_playwright
-            logger.info("🌐 Initializing persistent Playwright browser...")
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage'
-                ]
-            )
-            
-            script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            auth_state_path = os.path.join(script_dir, "notion_auth.json")
-            user_agent_path = os.path.join(script_dir, "user_agent.txt")
-            
-            if not os.path.exists(auth_state_path):
-                logger.error(f"❌ Auth state file does not exist: {auth_state_path}. Please run python notion_auth.py to login first!")
-                return False
-                
-            context_args = {
-                "storage_state": auth_state_path,
-                "viewport": {"width": 1920, "height": 1080},
-                "locale": "zh-CN",
-                "timezone_id": "Asia/Shanghai"
-            }
-            if os.path.exists(user_agent_path):
-                with open(user_agent_path, "r", encoding="utf-8") as f:
-                    context_args["user_agent"] = f.read().strip()
-                    
-            self.context = await self.browser.new_context(**context_args)
-            self.context.set_default_timeout(60000)
-            self.page = await self.context.new_page()
-            await Stealth().apply_stealth_async(self.page)
-            
-            page_url = config.notion_ai_page_url
-            if not page_url:
-                logger.error("❌ NOTION_AI_PAGE_URL is not specified in configuration!")
-                return False
-                
-            logger.info(f"🌐 Accessing Notion page via headless browser: {page_url}")
-            await self.page.goto(page_url, wait_until="load")
-            logger.info("✅ Initial page loaded, waiting 10 seconds to ensure routing and AI panel are fully initialized...")
-            await asyncio.sleep(10)
+        """确保浏览器处于健康可用状态。任何组件异常都会触发完整重建，带重试机制。"""
+        # 检查所有组件是否健康
+        page_closed = False
+        try:
+            page_closed = self.page is not None and self.page.is_closed()
+        except Exception:
+            page_closed = True
+
+        browser_healthy = (
+            self.playwright is not None
+            and self.browser is not None
+            and self.browser.is_connected()
+            and self.context is not None
+            and self.page is not None
+            and not page_closed
+        )
+
+        if browser_healthy:
             return True
-            
-        if self.page and self.page.is_closed():
-            logger.warning("⚠️ Browser page was closed, re-initializing page...")
+
+        # 浏览器不健康，先清理残留状态再重建
+        if self.playwright is not None:
+            logger.warning("⚠️ Browser in unhealthy state, cleaning up before re-initialization...")
+            await self.close()
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
             try:
+                from playwright.async_api import async_playwright
+                logger.info(f"🌐 Initializing persistent Playwright browser... (attempt {attempt}/{max_retries})")
+                self.playwright = await async_playwright().start()
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage'
+                    ]
+                )
+
+                script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                auth_state_path = os.path.join(script_dir, "notion_auth.json")
+                user_agent_path = os.path.join(script_dir, "user_agent.txt")
+
+                if not os.path.exists(auth_state_path):
+                    logger.error(f"❌ Auth state file does not exist: {auth_state_path}. Please run python notion_auth.py to login first!")
+                    await self.close()
+                    return False
+
+                context_args = {
+                    "storage_state": auth_state_path,
+                    "viewport": {"width": 1920, "height": 1080},
+                    "locale": "zh-CN",
+                    "timezone_id": "Asia/Shanghai"
+                }
+                if os.path.exists(user_agent_path):
+                    with open(user_agent_path, "r", encoding="utf-8") as f:
+                        context_args["user_agent"] = f.read().strip()
+
+                self.context = await self.browser.new_context(**context_args)
+                self.context.set_default_timeout(60000)
                 self.page = await self.context.new_page()
-                await self.page.goto(config.notion_ai_page_url, wait_until="load")
+                await Stealth().apply_stealth_async(self.page)
+
+                page_url = config.notion_ai_page_url
+                if not page_url:
+                    logger.error("❌ NOTION_AI_PAGE_URL is not specified in configuration!")
+                    await self.close()
+                    return False
+
+                logger.info(f"🌐 Accessing Notion page via headless browser: {page_url}")
+                await self.page.goto(page_url, wait_until="load")
+                logger.info("✅ Initial page loaded, waiting 10 seconds to ensure routing and AI panel are fully initialized...")
                 await asyncio.sleep(10)
                 return True
+
             except Exception as e:
-                logger.warning(f"⚠️ Failed to re-initialize page ({e}), forcing full browser restart...")
-                await self.close()
-                return await self._ensure_browser()
-            
-        return True
+                logger.error(f"❌ Browser initialization failed (attempt {attempt}/{max_retries}): {e}")
+                await self.close()  # 清理半初始化状态，确保下次重试从干净状态开始
+                if attempt < max_retries:
+                    wait_sec = 10 * attempt  # 指数退避：10s, 20s
+                    logger.info(f"⏳ Retrying browser initialization in {wait_sec}s...")
+                    await asyncio.sleep(wait_sec)
+
+        logger.critical("🚨 All browser initialization attempts failed! AIWorker will retry on next trigger.")
+        return False
 
 
     async def execute_ai_trigger(self, subject: str, action: str = None):
