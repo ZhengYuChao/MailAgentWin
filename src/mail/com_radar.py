@@ -3,6 +3,7 @@
 COM 事件回调里只做最轻量动作，绝对禁止发 HTTP / 调 Notion。
 """
 import threading, time, logging, os, subprocess
+from datetime import datetime, timedelta, timezone
 import pythoncom, win32com.client
 from src.scheduler.task_pool import global_task_pool
 from src.models import TaskType, TaskPriority
@@ -61,6 +62,100 @@ def _wait_for_outlook_ready(max_wait: int = 60, interval: float = 3.0) -> bool:
     
     log.warning(f"Outlook readiness probe timed out after {max_wait}s")
     return False
+
+
+def _fallback_scan(lookback_seconds: int = 120):
+    """
+    兜底轮询：扫描最近 lookback_seconds 秒内的收件箱和发件箱邮件，
+    将未同步的 EntryID 加入全局任务池 (LOW priority)。
+    
+    使用 Outlook Table API 做轻量级扫描（不加载邮件正文），
+    并通过本地 SyncStore 过滤已同步的邮件。
+    """
+    try:
+        from src.mail.sync_store import SyncStore
+        from src.config import config
+
+        sync_store = SyncStore()
+        app = win32com.client.Dispatch("Outlook.Application")
+        ns = app.GetNamespace("MAPI")
+        
+        since = datetime.now() - timedelta(seconds=lookback_seconds)
+        iso_since = since.strftime('%Y-%m-%d %H:%M')
+        
+        new_count = 0
+        
+        # 扫描收件箱和发件箱
+        # olFolderInbox=6, olFolderSentMail=5
+        folder_configs = [
+            (6, "ReceivedTime", "0x0E060040"),  # Inbox
+            (5, "SentOn", "0x00390040"),          # Sent Items
+        ]
+        
+        for folder_kind, date_prop, prop_tag in folder_configs:
+            try:
+                # 尝试使用指定账户的文件夹
+                target_account = config.mail_account_name
+                folder = None
+                store_id = None
+                
+                try:
+                    stores = ns.Stores
+                    for i in range(1, stores.Count + 1):
+                        store = stores.Item(i)
+                        if target_account.lower() in store.DisplayName.lower():
+                            root = store.GetRootFolder()
+                            folders = root.Folders
+                            for j in range(1, folders.Count + 1):
+                                f = folders.Item(j)
+                                if f.DefaultItemType == 0:
+                                    if folder_kind == 6 and f.Name.lower() in ["收件箱", "inbox"]:
+                                        folder = f
+                                    if folder_kind == 5 and f.Name.lower() in ["已发送邮件", "sent items", "sent", "已发送"]:
+                                        folder = f
+                            if folder:
+                                try:
+                                    store_id = store.StoreID
+                                except Exception:
+                                    pass
+                            break
+                except Exception:
+                    pass
+                
+                if not folder:
+                    folder = ns.GetDefaultFolder(folder_kind)
+                
+                # 使用 Table API 做轻量级扫描
+                restrict = f"@SQL=\"http://schemas.microsoft.com/mapi/proptag/{prop_tag}\" >= '{iso_since}'"
+                table = folder.GetTable(restrict)
+                table.Columns.RemoveAll()
+                table.Columns.Add("EntryID")
+                table.Columns.Add(date_prop)
+                
+                while not table.EndOfTable:
+                    row = table.GetNextRow()
+                    eid = row.Item("EntryID")
+                    
+                    if not sync_store.is_synced(eid):
+                        dt = row.Item(date_prop)
+                        if dt:
+                            ts = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+                                         tzinfo=timezone.utc).timestamp()
+                        else:
+                            ts = time.time()
+                        
+                        payload = {"entry_id": eid, "store_id": store_id}
+                        global_task_pool.add_task(TaskType.MAIL_SYNC, TaskPriority.LOW, payload, timestamp=ts)
+                        new_count += 1
+                        
+            except Exception as e:
+                log.debug(f"Fallback scan error for folder_kind={folder_kind}: {e}")
+        
+        if new_count > 0:
+            log.info(f"🔄 Fallback scan: queued {new_count} unsynced email(s) (Priority LOW)")
+            
+    except Exception as e:
+        log.debug(f"Fallback scan failed: {e}")
 
 
 class OutlookEventSink:
@@ -131,7 +226,8 @@ def start_radar(poll_interval: int = 60) -> threading.Thread:
                         
                         now = time.time()
                         if now - last_poll > poll_interval:
-                            # 兜底逻辑可以在这里实现（例如扫描最近文件夹）
+                            # 兜底扫描：检查最近 poll_interval*2 秒内的邮件是否有遗漏
+                            _fallback_scan(lookback_seconds=poll_interval * 2)
                             last_poll = now
                         
                         time.sleep(0.5)

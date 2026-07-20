@@ -190,15 +190,37 @@ class NotionSync:
         ]
 
         if invite.teams_url:
-            rich_text_parts.append({"type": "text", "text": {"content": "\n🔗 会议链接：输出"}})
-            rich_text_parts.append({
-                "type": "text",
-                "text": {
-                    "content": invite.teams_url[:80] + ("..." if len(invite.teams_url) > 80 else ""),
-                    "link": {"url": invite.teams_url}
-                },
-                "annotations": {"color": "blue"}
-            })
+            import urllib.parse
+            import re
+            safe_url = invite.teams_url.strip()
+            safe_url = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', safe_url)
+            is_valid_url = False
+            try:
+                parsed = urllib.parse.urlparse(safe_url)
+                if parsed.netloc and safe_url.startswith(("http://", "https://")):
+                    is_valid_url = True
+            except Exception:
+                pass
+                
+            rich_text_parts.append({"type": "text", "text": {"content": "\n🔗 会议链接：" if is_valid_url else "\n🔗 会议链接 (无效URL)："}})
+            
+            link_text = invite.teams_url[:80] + ("..." if len(invite.teams_url) > 80 else "")
+            if is_valid_url:
+                rich_text_parts.append({
+                    "type": "text",
+                    "text": {
+                        "content": link_text,
+                        "link": {"url": safe_url}
+                    },
+                    "annotations": {"color": "blue"}
+                })
+            else:
+                rich_text_parts.append({
+                    "type": "text",
+                    "text": {
+                        "content": link_text
+                    }
+                })
 
         if invite.meeting_id:
             rich_text_parts.append({"type": "text", "text": {"content": f"\n🆔 会议 ID：{invite.meeting_id}"}})
@@ -368,8 +390,9 @@ class NotionSync:
     async def create_email_page_v2(self, email: Email, skip_parent_lookup: bool = False, calendar_page_id: str = None, meeting_invite: 'MeetingInvite' = None) -> Optional[str]:
         try:
             logger.info(f"Creating email page (v2): {email.subject}")
-            if await self.client.check_page_exists(email.message_id):
+            if email.message_id and await self.client.check_page_exists(email.message_id):
                 existing = await self.client.query_database(filter_conditions={"property": "Message ID", "rich_text": {"equals": email.message_id}})
+                logger.info(f"⏭️ Email already exists in Notion (Message-ID: {email.message_id[:60]}), skipping.")
                 return existing[0].get("id") if existing else None
             
             from src.config import config as app_config

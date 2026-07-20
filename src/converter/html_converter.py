@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 import html2text
 from loguru import logger
+import urllib.parse
 
 class HTMLToNotionConverter:
     """HTML 转 Notion Blocks 转换器"""
@@ -11,6 +12,34 @@ class HTMLToNotionConverter:
         self.html2text.ignore_links = False
         self.html2text.body_width = 0  # 不换行
         self.image_map = {}  # cid/filename -> file_upload_id映射
+
+    @staticmethod
+    def _sanitize_url(url: str) -> str:
+        """清理和验证 URL，确保其能被 Notion API 接受"""
+        if not url:
+            return ""
+        
+        # 去除空白字符
+        url = url.strip()
+        
+        # 必须是 http/https 开头
+        if not url.startswith(("http://", "https://")):
+            return ""
+            
+        # 尝试解析 URL，验证其结构
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if not parsed.netloc:
+                return ""
+                
+            # 去除 URL 中的不可见字符和非法换行
+            import re
+            url = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', url)
+            
+            return url
+        except Exception:
+            return ""
+
 
     def convert(self, html_content: str, image_map: Dict[str, tuple] = None) -> List[Dict[str, Any]]:
         """
@@ -222,8 +251,11 @@ class HTMLToNotionConverter:
                 # 保留空格
                 import re
                 text = re.sub(r'\s+', ' ', text).strip()
-                if text and href and href.startswith(('http://', 'https://')):
-                    rich_text.append(self._create_rich_text_item(text, link=href, annotations=new_annotations))
+                
+                safe_href = self._sanitize_url(href)
+                
+                if text and safe_href:
+                    rich_text.append(self._create_rich_text_item(text, link=safe_href, annotations=new_annotations))
                 elif text:
                     rich_text.append(self._create_rich_text_item(text, annotations=new_annotations))
                 return
@@ -251,8 +283,10 @@ class HTMLToNotionConverter:
         }
 
         if link:
-            safe_url = link[:2000] if len(link) > 2000 else link
-            item["text"]["link"] = {"url": safe_url}
+            safe_url = self._sanitize_url(link)
+            if safe_url:
+                safe_url = safe_url[:2000] if len(safe_url) > 2000 else safe_url
+                item["text"]["link"] = {"url": safe_url}
 
         if annotations and any(annotations.values()):
             item["annotations"] = {
@@ -445,14 +479,16 @@ class HTMLToNotionConverter:
                         blocks.append(image_block)
 
                 # 如果有文本，创建带链接的段落
+                safe_href = self._sanitize_url(href)
                 if text:
-                    # 过滤掉明显的按钮样式文本
-                    if href.startswith(("http://", "https://")):
+                    if safe_href:
                         # 创建带链接的文本（Notion 支持 rich_text 中的链接）
-                        blocks.append(self._create_link_paragraph(text, href))
-                elif href.startswith(("http://", "https://")) and not img:
+                        blocks.append(self._create_link_paragraph(text, safe_href))
+                    else:
+                        blocks.append(self._create_paragraph(text))
+                elif safe_href and not img:
                     # 纯链接无文本：显示 URL
-                    blocks.append(self._create_link_paragraph(href, href))
+                    blocks.append(self._create_link_paragraph(safe_href, safe_href))
 
             elif child.name == "br":
                 continue
@@ -618,12 +654,17 @@ class HTMLToNotionConverter:
             }
         }
 
-    @staticmethod
-    def _create_link_paragraph(text: str, url: str) -> Dict[str, Any]:
+    def _create_link_paragraph(self, text: str, url: str) -> Dict[str, Any]:
         """创建带链接的段落 Block"""
         safe_text = HTMLToNotionConverter._truncate_by_utf16(text)
+        safe_url = self._sanitize_url(url)
+        
+        # 如果 URL 无效，降级为普通文本
+        if not safe_url:
+            return self._create_paragraph(text)
+            
         # 截断过长的 URL
-        safe_url = url[:2000] if len(url) > 2000 else url
+        safe_url = safe_url[:2000] if len(safe_url) > 2000 else safe_url
         return {
             "object": "block",
             "type": "paragraph",

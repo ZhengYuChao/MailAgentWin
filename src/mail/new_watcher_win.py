@@ -145,18 +145,22 @@ class WindowsWatcher:
         )
 
         if fetched.has_attachments:
-            raw_item = self.arm.get_raw_item(entry_id)
-            if raw_item:
-                attachments = self.attachment_handler.extract(raw_item)
-                for att in attachments:
-                    email.attachments.append(Attachment(
-                        filename=att.filename,
-                        content_type=att.content_type,
-                        size=att.size,
-                        path=att.local_path,
-                        content_id=att.content_id,
-                        is_inline=att.is_inline
-                    ))
+            try:
+                raw_item = self.arm.get_raw_item(entry_id)
+                if raw_item:
+                    attachments = self.attachment_handler.extract(raw_item)
+                    for att in attachments:
+                        email.attachments.append(Attachment(
+                            filename=att.filename,
+                            content_type=att.content_type,
+                            size=att.size,
+                            path=att.local_path,
+                            content_id=att.content_id,
+                            is_inline=att.is_inline
+                        ))
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to extract attachments for '{email.subject}', "
+                               f"syncing email without attachments: {e}")
 
         parent_page_url = find_parent_in_db(fetched.conversation_index, self.sync_store)
         

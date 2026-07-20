@@ -38,7 +38,7 @@ class SyncStore:
             INSERT OR REPLACE INTO mail_sync 
             (entry_id, message_id, conversation_id, conversation_index, notion_page_url, notion_page_id, parent_page_url, last_synced_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
-            """, (entry_id, message_id, conversation_id, conversation_index, notion_page_url, notion_page_id, parent_page_url))
+            """, (entry_id, message_id or None, conversation_id, conversation_index, notion_page_url, notion_page_id, parent_page_url))
 
     def get_by_entry_id(self, entry_id: str) -> Optional[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
