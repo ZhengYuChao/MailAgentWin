@@ -49,6 +49,7 @@ class WindowsWatcher:
         
         self.background_tasks = set()
         self.mail_sync_semaphore = asyncio.Semaphore(3)  # 最多同时处理 3 个附件上传，防止爆内/过多并发
+        self._in_progress_entries: set[str] = set()  # 正在处理中的 entry_id，防止并发重复处理
         
         # 3. 主循环：处理任务池中的事件
         while self.running:
@@ -103,6 +104,11 @@ class WindowsWatcher:
                     finally:
                         if t.type == TaskType.MAIL_SYNC:
                             self._active_sync_tasks -= 1
+                            # 释放 entry_id，允许未来兜底重试重新入队
+                            eid = t.payload.get("entry_id", "")
+                            if eid:
+                                self._in_progress_entries.discard(eid)
+                                global_task_pool.mark_entry_done(eid)
                         global_task_pool.task_done()
 
                 bg_task = asyncio.create_task(run_task())
@@ -117,6 +123,12 @@ class WindowsWatcher:
         """处理同步任务：获取邮件 -> 转换内容 -> 写入 Notion -> (可选) 触发 AI"""
         if self.sync_store.is_synced(entry_id):
             return
+
+        # 防御性去重：如果同一 entry_id 正在被另一个并发任务处理，跳过
+        if entry_id in self._in_progress_entries:
+            logger.debug(f"⏭️ Skipped duplicate in-progress entry: {entry_id[:24]}")
+            return
+        self._in_progress_entries.add(entry_id)
 
         fetched = self.arm.fetch_by_entry_id(entry_id, store_id)
         if not fetched:
