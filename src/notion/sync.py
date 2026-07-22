@@ -436,15 +436,30 @@ class NotionSync:
                 current_dt = (email.date.replace(tzinfo=BEIJING_TZ) if email.date.tzinfo is None else email.date.astimezone(BEIJING_TZ)) if email.date else None
                 for member in thread_members: member['date_dt'] = self._parse_date_to_beijing(member.get('date', ''))
                 valid_members = [m for m in thread_members if m.get('date_dt')]
+                # 没有有效日期的成员放到末尾
+                invalid_members = [m for m in thread_members if not m.get('date_dt')]
                 if valid_members:
                     latest_member = max(valid_members, key=lambda x: x['date_dt'])
+                    # 按时间升序排列（最早的在前），让 Notion 展示类似 Outlook 的时间顺序
+                    sorted_valid = sorted(valid_members, key=lambda x: x['date_dt'])
+                    sorted_all = sorted_valid + invalid_members
                     if current_dt and current_dt >= latest_member['date_dt']:
-                        await self.update_sub_items(page_id, [m['page_id'] for m in thread_members])
+                        # 当前邮件是最新的 → 当前邮件为父，其余按时间排序为子
+                        await self.update_sub_items(page_id, [m['page_id'] for m in sorted_all])
                     else:
                         latest_page_id = latest_member['page_id']
-                        all_non_latest = [m['page_id'] for m in thread_members if m['page_id'] != latest_page_id]
-                        all_non_latest.append(page_id)
-                        await self.update_sub_items(latest_page_id, all_non_latest)
+                        # 排除 latest，再加上当前邮件，按时间排序
+                        all_non_latest = [m for m in sorted_all if m['page_id'] != latest_page_id]
+                        # 把当前邮件按时间插入正确位置
+                        if current_dt:
+                            insert_idx = 0
+                            for i, m in enumerate(all_non_latest):
+                                if m.get('date_dt') and m['date_dt'] <= current_dt:
+                                    insert_idx = i + 1
+                            all_non_latest.insert(insert_idx, {'page_id': page_id, 'date_dt': current_dt})
+                        else:
+                            all_non_latest.append({'page_id': page_id, 'date_dt': None})
+                        await self.update_sub_items(latest_page_id, [m['page_id'] for m in all_non_latest])
                     return
 
             # Fallback 1: Message-ID (In-Reply-To)
