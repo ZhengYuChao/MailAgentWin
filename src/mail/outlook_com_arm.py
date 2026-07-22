@@ -42,7 +42,7 @@ class FetchedMail:
     from_name: str
     to: list[str]
     cc: list[str]
-    date_utc: str               # ISO-8601
+    date_utc: str               # ISO-8601 (保留 Outlook 原始时区)
     html_body: str
     text_body: str
     is_read: bool
@@ -230,7 +230,7 @@ class OutlookComArm:
             from_name=getattr(item, "SenderName", "") or "",
             to=self._split_recipients(getattr(item, "To", "")),
             cc=self._split_recipients(getattr(item, "CC", "")),
-            date_utc=self._to_iso_utc(getattr(item, "ReceivedTime", None)),
+            date_utc=self._to_iso(getattr(item, "ReceivedTime", None)),
             html_body=getattr(item, "HTMLBody", "") or "",
             text_body=getattr(item, "Body", "") or "",
             is_read=not bool(getattr(item, "UnRead", False)),
@@ -382,12 +382,17 @@ class OutlookComArm:
         return [x.strip() for x in s.replace(";", ",").split(",") if x.strip()]
 
     @staticmethod
-    def _to_iso_utc(dt) -> str:
+    def _to_iso(dt) -> str:
         if dt is None:
             return ""
-        # dt 是 pywintypes.datetime，可以直接转换为 python datetime
-        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=timezone.utc)
-        return py_dt.isoformat()
+        # pywintypes.datetime 自带时区信息，直接保留；不强制覆盖为 UTC
+        try:
+            # pywintypes.datetime 可直接 isoformat()
+            return dt.isoformat()
+        except AttributeError:
+            # 兜底：手动构建 python datetime（不附加时区，视为本地时间）
+            py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+            return py_dt.isoformat()
 
     @staticmethod
     def _infer_mailbox(item) -> str:

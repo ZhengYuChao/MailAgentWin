@@ -164,6 +164,6 @@ python main.py
 
 若需手动回填过去指定天数的历史邮件（如补查过去 14 天的邮件），可另开一个终端直接运行：
 ```powershell
-python scripts/initial_sync_win.py 14
+python scripts/fix_missed_emails.py 14
 ```
 该脚本将利用 [new_watcher_win.py](src/mail/new_watcher_win.py) 相同的同步接口，跳过 Notion AI 自动化汇总，只进行静默的邮件实体与附件同步。
