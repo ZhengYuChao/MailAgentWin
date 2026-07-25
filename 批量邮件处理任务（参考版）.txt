@@ -1,0 +1,313 @@
+邮件批量处理指令（脱敏版）
+
+目标：在 Notion AI Chat 中，按本页长期准则预处理指定邮件数据库中的目标邮件。只操作该 Notion 数据库，不连接外部邮件服务，不发送邮件，不创建草稿。
+
+脱敏说明：本页已泛化个人姓名、邮箱、组织名称、产品名称、项目代号和内部页面名称，仅保留可复用的字段逻辑与执行准则。
+
+0. 规则页与单次 Prompt 的职责
+
+本页只定义长期稳定的规则，不规定每次处理多少封邮件。
+
+单次 Prompt 可以控制：
+- 处理数量；
+- 候选范围；
+- 排序方式；
+- 最终输出格式。
+
+单次 Prompt 不得覆盖：
+- 数据库真实字段名、字段类型和枚举值；
+- 状态流转和完成判定；
+- Priority、Action Required 等字段的判断准则；
+- 禁止修改的字段和安全边界；
+- 不发送邮件、不创建草稿等限制。
+
+如单次 Prompt 未指定处理数量，必须要求用户补充数量，不得自行采用默认数量。
+
+1. 数据源与真实字段
+
+数据源固定为用户在单次 Prompt 中指定的 Notion 邮件数据库，不使用外部邮件连接。
+
+处理前必须读取数据库真实 Schema，严格使用真实字段名、字段类型和枚举值，不得猜测。
+
+1.1 邮件原始字段映射
+- 标题：Subject
+- 发件人邮箱：From
+- 发件人姓名：From Name
+- 收件人：To
+- 抄送人：CC、CC More List
+- 收发方向：Mailbox
+- 邮件时间：Date
+- 线程标识：Thread ID
+- 邮件标识：Message ID
+- 正文：邮件页面正文
+- 是否含附件：Has Attachments
+- 原始邮件文件：Original EML
+- 原始 Flag：Is Flagged
+
+若数据库不存在 Sender 字段，所有发件人身份判断必须以原始 From 和 From Name 为准，不得根据 To、CC 或正文推断发件人。
+
+1.2 必填处理字段
+- AI Summary
+- Key Points
+- Category
+- Language
+- Sender Priority
+- Priority
+- Action Required
+- Action Type
+
+条件必填：
+- 当 Priority = 🧨领导 或 Priority = 🔴 紧急 时，Urgency Reason 必填。
+
+Action Required 是 Checkbox；false 是有效且完整的值，不能因为未勾选就判定为缺失。
+
+1.3 默认不处理字段
+
+除非用户在单次 Prompt 中明确要求，否则不得修改：
+- Reply Suggestion
+- Mail Actions
+- Delete
+- Is Read
+- Is Flagged
+- Synced to Mail
+- Daily Digests
+- Calendar Events
+- Related Project
+
+2. 候选范围、排序与数量
+
+候选邮件可以包括：
+- Processing Status = 未处理
+- Processing Status = AI Reviewed
+- Processing Status = 已同步，但一个或多个必填处理字段为空
+
+必须排除：
+- Processing Status = 草稿已创建
+- Processing Status = 已完成
+- Processing Status = 已同步 且必填处理字段完整
+
+执行顺序：
+1. 先形成完整候选集合；
+2. 再按单次 Prompt 指定的方式排序；
+3. 最后只选取单次 Prompt 指定的数量作为本轮目标。
+
+不得在完成本轮指定数量后继续扩展处理范围。
+
+3. 加载与状态流转
+
+3.1 未处理
+1. 入选本轮目标后，先将状态更新为 AI Reviewed；
+2. 再读取完整邮件内容并处理；
+3. 通过自检后更新为 已同步；
+4. 处理失败时保持 AI Reviewed，供后续重试。
+
+3.2 AI Reviewed
+- 直接继续处理；
+- 通过自检后更新为 已同步；
+- 处理失败时保持 AI Reviewed。
+
+3.3 已同步但字段不完整
+- 只补齐或纠正处理字段；
+- 处理成功后继续保持 已同步；
+- 处理失败时仍保持 已同步，并在最终输出中说明原因；
+- 不得为了重新处理而降级为 AI Reviewed。
+
+3.4 终态保护
+- 草稿已创建 和 已完成 为受保护状态，不得重新处理或修改；
+- 本预处理流程不得把任何邮件写入 草稿已创建 或 已完成；
+- 本流程允许写入的完成状态只有 已同步。
+
+4. 邮件内容加载
+
+每封目标邮件应读取：
+- Subject、页面正文、From、From Name、To、CC、CC More List；
+- Mailbox、Date、Thread ID、Message ID；
+- Has Attachments、Original EML、Is Flagged。
+
+若 Has Attachments = true，应先查看 Original EML 或可访问的附件信息；仅当附件内容可以访问且确实影响判断时读取附件正文。不能因为附件无法展开，就直接把整封邮件判定为失败；应根据主题、正文和邮件元数据完成可完成的判断，并在必要时说明限制。
+
+严禁在筛选前批量加载大量邮件正文。必须先筛选并锁定本轮目标，再逐封加载目标邮件。
+
+5. Inbox / Sent 路由
+
+5.1 收件箱
+当 Mailbox = 收件箱 / Inbox：
+- 判断当前用户是否需要回复、决策、Review、参会、跟进或重点关注；
+- 有明确请求、截止日期、决策点、风险，或触及当前用户核心负责主题时，Action Required = true；
+- 无关通知、纯抄送、重复系统通知或纯备档信息，可以设为 Action Required = false。
+
+5.2 发件箱
+当 Mailbox = 发件箱 / Sent：
+- 判断是否正在等待对方响应，以及是否已经需要跟进；
+- 明确超期、阻塞或需要催办：Action Required = true，Action Type = 需要跟进；
+- 尚在正常等待期：Action Required = false，Action Type = 等待响应；
+- 事项明确结束：Action Required = false，Action Type = 已完结。
+
+不得仅因为 From 是当前用户，就自动把邮件标记为 已完成。发件箱邮件仍须按等待响应和跟进规则判断。
+
+6. 字段填写规则
+
+6.1 AI Summary
+- 2–4 句，500 字以内；
+- 说明背景、当前进展、相关方请求，以及当前用户需要做什么或关注什么；
+- 明确请求、截止日期、承诺、风险和阻塞必须提及；
+- 不得凭空补充正文中不存在的信息。
+
+6.2 Key Points
+
+至少包含一条有信息价值的要点，优先提取：
+- 待办；
+- 决策点；
+- 截止日期；
+- 关键数据；
+- 风险或阻塞；
+- 发件箱邮件中的请求、承诺和待回复事项。
+
+6.3 Category
+
+必须使用数据库真实单选枚举，例如：
+- 💼 产品管理
+- 🤝 会议通知
+- 🛠️ 技术讨论
+- 👥 团队协作
+- 📊 项目管理
+- 🔔 系统通知
+- 🌐 外部沟通
+
+6.4 Language
+
+必须使用数据库真实单选枚举，例如：
+- English
+- 中文
+- Spanish
+- French
+- German
+- Japanese
+- Korean
+- Russian
+- Other
+
+6.5 Sender Priority
+
+必须使用数据库真实单选枚举，例如：
+- 管理层
+- 核心团队
+- 产品团队
+- 研发团队
+- 销售团队
+- 外部联系人
+- 系统
+
+Inbox 按发件人身份判断；Sent 按主要收件人和事项相关方判断。
+
+6.6 Action Type
+
+必须使用数据库真实单选枚举，例如：
+- 需要回复
+- 需要决策
+- 需要Review
+- 需要会议
+- 需要跟进
+- 仅供参考
+- 等待响应
+- 已完结
+
+6.7 Priority
+
+必须使用数据库真实单选枚举，字符和空格必须完全一致，例如：
+- 🧨领导
+- 🔴 紧急
+- 🟡 重要
+- 🟢 一般
+- ⚪ 低
+
+判断原则：
+- 🧨领导：涉及预设管理层相关方；
+- 🔴 紧急：事故、发布阻塞、重大投诉、临近或已经逾期的重要事项；
+- 🟡 重要：重要项目、关键协同、明确交付，但未达到紧急程度；
+- 🟢 一般：正常业务沟通和一般待办；
+- ⚪ 低：低价值通知、纯备档或与当前用户关联很弱的信息。
+
+6.8 Urgency Reason
+
+当 Priority = 🧨领导 或 Priority = 🔴 紧急 时，必须填写 1–3 句，说明触发角色、时间要求、阻塞、事故或业务风险。
+
+7. 管理层与核心主题规则
+
+7.1 预设管理层相关方
+
+预设管理层名单应由内部配置维护，不在脱敏版中记录具体姓名或邮箱。
+
+若邮件在 From、From Name、To、CC、CC More List、转发正文、会议邀请、纪要或线程上下文中涉及预设管理层相关方，则：
+- Priority = 🧨领导
+- Sender Priority = 管理层
+- Action Required 默认设为 true
+
+只有能够明确证明邮件属于无关自动通知、无业务请求的大范围群发，或者事项已经明确结束时，Action Required 才可设为 false；Priority 和 Sender Priority 仍不得降级。
+
+除预设名单外，不得仅凭职位或姓名自动使用 🧨领导。
+
+7.2 Action Required 核心主题
+
+以下类型的主题默认需要当前用户关注或介入：
+- 核心软件、固件、平台、应用、云服务、接入和部署；
+- 重点产品线、新品上市、市场策略、宣传、培训、包装和降本；
+- 销量、区域趋势、竞品、客户流失原因和核心卖点论证；
+- 重点项目的排期、缺陷、发布、适配和法规；
+- 安全、合规、标准特性、区域法规、认证和测试；
+- 管理层关注或产品、研发、云平台、应用、生产导入、包装、测试等跨团队协同；
+- 测试版、候选发布、正式发布、事故、投诉、外部合作和市场反馈；
+- 产品体验、多端一致性和运维排查体验。
+
+以下情况可以设为不需行动：
+- 无关人事、IT、行政、订阅和广告；
+- 其他业务线且与当前用户无交集；
+- 重复自动通知；
+- 纯备档信息；
+- 发件箱邮件仍在合理等待期且没有催办必要。
+
+8. 同 Thread 上下文
+
+处理目标邮件时，应查询相同 Thread ID 的相关历史邮件，以理解上下文。
+
+- 历史邮件只用于判断，不占单次 Prompt 指定的处理数量；
+- 除非历史邮件本身也是本轮目标，否则不得修改；
+- 历史高优先级和 Action Required = true 可作为默认继承依据；
+- 如果最新邮件明确证明问题已解决、请求已撤销、事项已结束或优先级已经下降，可以调整 Priority 或 Action Required，但必须在 AI Summary 或 Key Points 中说明依据；
+- 不得仅因最新邮件是简短回执，就在缺乏上下文依据时擅自降级。
+
+9. 写入前自检与完成判定
+
+每封邮件写入前必须确认：
+1. AI Summary 非空，符合 2–4 句要求；
+2. Key Points 至少有 1 条有效信息；
+3. Category 使用真实枚举且非空；
+4. Language 使用真实枚举且非空；
+5. Sender Priority 使用真实枚举且非空；
+6. Priority 使用真实枚举且非空；
+7. Action Required 已明确为 true 或 false；
+8. Action Type 使用真实枚举且非空；
+9. Priority = 🧨领导 / 🔴 紧急 时，Urgency Reason 非空；
+10. 未修改任何受保护的原始字段或默认不处理字段。
+
+通过自检后：
+- 每封邮件用一次更新写入全部处理字段；
+- 未处理 / AI Reviewed 邮件最终设为 已同步；
+- 原本为 已同步 但字段缺失的邮件补齐后保持 已同步；
+- 更新后校验必填字段和最终状态；只有关键字段完整且状态为 已同步 才计入完成数量。
+
+未通过自检：
+- 不得伪装为处理成功；
+- 按第 3 节保留原有或中间状态；
+- 在单次 Prompt 规定的最终输出中简要报告原因。
+
+10. 安全与脱敏边界
+
+- 人工已填写且合理的内容默认保留；只有明显错误或与邮件正文冲突时才纠正；
+- 严禁修改 Subject、From、From Name、To、CC、CC More List、Mailbox、Date、Thread ID、Message ID、Original EML、Has Attachments 等原始字段；
+- 严禁删除、归档邮件页面；
+- 严禁发送、回复、转发邮件或创建草稿；
+- 严禁修改 Reply Suggestion、Mail Actions、Delete、Is Read、Is Flagged、Synced to Mail、Daily Digests、Calendar Events；
+- 不处理会议，不生成 Daily Digest；
+- 对外分享时，必须删除或泛化个人姓名、邮箱、组织名称、客户名称、内部页面链接、产品名称、项目代号及其他可识别信息；
+- 不确定时保守判断，但不得编造事实。

@@ -254,9 +254,13 @@ class AIController:
                     prompt_text = f.read().strip()
                     
             # 尝试寻找并切换 AI 模型
-            target_model_name = config.ai_model.strip()
+            if action == "scheduled_daily_sync":
+                target_model_name = config.ai_model_daily_summary.strip()
+            else:
+                target_model_name = config.ai_model_email_sync.strip()
+                
             if target_model_name.lower() == "auto":
-                logger.info("ℹ️ AI_MODEL configured as Auto, skipping model switch.")
+                logger.info("ℹ️ Target AI_MODEL configured as Auto, skipping model switch.")
             else:
                 try:
                     logger.info(f"🔍 Attempting to switch AI model to target: {target_model_name}")
@@ -271,11 +275,12 @@ class AIController:
                     for m in known_models:
                         if m not in seen:
                             seen.add(m)
-                            # 使用 :has-text() 进行宽松的文本匹配，匹配任何包含模型关键词的可点击元素
-                            selector_parts.append(f"[role='button']:has-text('{m}')")
-                            selector_parts.append(f"button:has-text('{m}')")
-                            selector_parts.append(f"div[class*='model']:has-text('{m}')")
-                            selector_parts.append(f"span:has-text('{m}')")
+                            # 使用 :text-is() 进行精确的文本匹配，避免误匹配到带有这些关键词的普通邮件内容（如 "Auto"）
+                            selector_parts.append(f"[role='button']:text-is('{m}')")
+                            selector_parts.append(f"button:text-is('{m}')")
+                            selector_parts.append(f"div[class*='model']:text-is('{m}')")
+                            selector_parts.append(f"div:text-is('{m}')")
+                            selector_parts.append(f"span:text-is('{m}')")
                     
                     full_selector = ", ".join(selector_parts)
                     trigger = page.locator(full_selector).first

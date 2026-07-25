@@ -229,9 +229,13 @@ class Config(BaseSettings):
         default=600, env="NOTION_AI_WAIT_TIMEOUT",
         description="Notion AI 等待当前任务完成的最大超时时间（秒）"
     )
-    ai_model: str = Field(
-        default="Auto", env="AI_MODEL",
-        description="Notion AI 自动选择的模型，默认为 Auto"
+    ai_model_email_sync: str = Field(
+        default="Sonnet 4.6", env="AI_MODEL_EMAIL_SYNC",
+        description="日常邮件同步操作使用的模型"
+    )
+    ai_model_daily_summary: str = Field(
+        default="GPT-5.6 Sol", env="AI_MODEL_DAILY_SUMMARY",
+        description="每日定时深度总结使用的模型"
     )
     reverse_proxy: str = Field(
         default="", env="REVERSE_PROXY",

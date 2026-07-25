@@ -191,15 +191,17 @@ class OutlookComArm:
                 try:
                     item = self.ns.GetItemFromID(entry_id, store_id) if store_id else self.ns.GetItemFromID(entry_id)
                 except Exception as e2:
-                    logger.error(f"GetItemFromID failed again after reconnect: {e2}")
+                    logger.error(f"GetItemFromID failed again after reconnect for EntryID {entry_id[:16]}: {e2}")
                     return None
             else:
-                logger.warning(f"GetItemFromID failed: {e}")
+                logger.warning(f"GetItemFromID failed for EntryID {entry_id[:16]}: {e}")
                 return None
 
         if item.Class not in (OL_MAIL_CLASS, OL_MEETING_REQUEST_CLASS, 
                              OL_MEETING_RESPONSE_NEG_CLASS, OL_MEETING_RESPONSE_POS_CLASS, 
                              OL_MEETING_RESPONSE_TEN_CLASS, OL_MEETING_CANCELLATION_CLASS):
+            subject = getattr(item, "Subject", "") or "<No Subject>"
+            logger.warning(f"Ignored non-mail item (Class: {item.Class}, Subject: '{subject}', EntryID: {entry_id[:16]})")
             return None
 
         pa = item.PropertyAccessor

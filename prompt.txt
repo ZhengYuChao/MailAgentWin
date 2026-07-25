@@ -1,29 +1,29 @@
-任务：按规则批量处理 2 封目标邮件（从时间最新邮件开始处理）。
-请严格遵循《邮件批量处理指令》的规则，全自动执行，无需过程确认。
+任务：严格按照《邮件批量处理指令》批量处理目标邮件。
 
-1. 邮件筛选与处理
-在 《我的邮件｜[Adam] Email》这个page中（而不是去连接notion email）筛选目标邮件，范围包括：
-- Processing Status = 未处理 / AI Reviewed；
-- 或 Processing Status = 已同步，但关键字段缺失。
-将以上目标邮件按 Date 倒序排序，仅处理前面提到的邮件数。
+【本轮处理数量 N】：2
+（每次只修改这个数字。）
 
-处理要求：
-- 逐封读取完整邮件内容，包括 Subject、正文、From、To、CC、Date、Thread ID、附件、Flag 等。
-- 按《邮件批量处理指令》补齐所有缺失关键字段。
-- 最终只允许将 Processing Status 更新为 已同步，严禁写入 已完成(除非《邮件批量处理指令》的page里面有另外的要求）。
-- 已同步但字段缺失的邮件，补齐字段后保持 已同步。
+数据源仅限 Notion 中的《我的邮件｜[Adam] Email》，不得使用外部 Mail 连接。
 
-关键字段包括：
-AI Summary、Key Points、Category、Language、Sender Priority、Priority、Action Required、Action Type。
-若 Priority = 💥领导 或 🔴紧急，必须补齐 Urgency Reason。
+执行规则：
+1. 筛选以下候选邮件：
+   - Processing Status = 未处理 / AI Reviewed；
+   - 或 Processing Status = 已同步，但必填处理字段不完整。
+2. 先形成完整候选集合，按 Date 倒序排列，只处理前 N 封。
+3. 同 Thread 的其他邮件仅用于理解上下文，不计入 N，也不得修改。
+4. 全自动执行，无需过程确认。处理前读取数据库真实 Schema，严格使用真实字段名、类型和枚举值。
+5. 对“未处理”邮件，先标记为 AI Reviewed，再逐封读取完整邮件页面和相关字段。
+6. 严格按照《邮件批量处理指令》完成字段判断、状态流转、写入前自检及安全检查。
+7. 每封邮件一次性写入全部结果：
+   - 未处理 / AI Reviewed → 通过自检后设为 已同步；
+   - 已同步但字段缺失 → 补齐后保持 已同步。
+8. 不处理“草稿已创建 / 已完成”的邮件；不发送邮件、不创建草稿、不填写 Reply Suggestion、不修改 Mail Actions 或其他受保护字段。
+9. 只有必填字段完整且 Processing Status = 已同步，才计入完成数量；失败邮件不得伪装为完成。
 
-字段写入防错：
-- 写入前必须读取数据库真实 Schema，不得猜字段名。
-- 严格使用真实字段名，尤其注意含空格字段：AI Summary、Action Required、Action Type、Sender Priority、Processing Status。
-- 每封邮件更新后必须重新读取页面校验。
-- 只有关键字段完整且 Processing Status = 已同步，才计入完成数。
+执行结束后只回复一行，并将 N 替换为本轮实际数字：
 
-2. 极简结果输出
-执行结束后，只回复一句话，严格使用以下格式：
-邮件（X）已处理完毕。
-如果未完成，请在括号内用一句话说明原因。
+全部完成：
+邮件（N/N）已处理完毕。
+
+未全部完成：
+邮件（X/N）已处理完毕（未完成原因：一句话说明）。
