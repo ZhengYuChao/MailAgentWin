@@ -50,26 +50,25 @@ MailAgent 是一个运行在 Windows 平台上的自动化办公助手，能够�
 MailAgent Windows 在后台采用 **Supervisor 主进程 + 2 子进程**（多线程/asyncio）的架构运行，整体架构如下：
 
 ```mermaid
-graph TD
+flowchart TD
     %% Define Styles & Classes
-    classDef input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef process fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
-    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef module fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+    classDef input fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef process fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef module fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
 
     %% Subgraph Inputs
-    subgraph Inputs ["【输入源】"]
-        OutlookEvents["Outlook COM 事件 OnNewMailEx 和 OnItemAdd"]:::input
-        OutlookHistory["Outlook 历史邮件 startup_lookback_days"]:::input
-        NotionWebhook["Notion 反向 Webhook 操作回调"]:::input
-        DailyTimer["每日定时器 07:00 早报"]:::input
+    subgraph Inputs [输入源]
+        OutlookEvents["Outlook COM 事件"]:::input
+        OutlookHistory["Outlook 历史邮件"]:::input
+        NotionWebhook["Notion Webhook"]:::input
+        DailyTimer["每日定时器 07:00"]:::input
     end
 
     Supervisor["ProcessManager 主进程<br/>(负责监控与自动重启)"]:::module
 
     %% Subgraph Process A
-    subgraph ProcessA ["【进程 A: Mail Worker】"]
-        direction TB
+    subgraph ProcessA [进程 A: Mail Worker]
         Radar["COM Radar 监听器"]:::module
         API_Server["API Webhook 服务器"]:::module
         TaskPool["优先级任务池"]:::module
@@ -79,27 +78,26 @@ graph TD
     end
 
     %% Subgraph Process B
-    subgraph ProcessB ["【进程 B: AI Worker】"]
-        direction TB
+    subgraph ProcessB [进程 B: AI Worker]
         Debounce["防抖循环与并发控制"]:::module
         AIController["Notion AI 控制器<br/>(Playwright)"]:::module
     end
 
     %% Subgraph Outputs
-    subgraph Outputs ["【输出结果】"]
-        NotionPage["Notion 数据库页面树形线程"]:::output
+    subgraph Outputs [输出结果]
+        NotionPage["Notion 数据库页面"]:::output
         OutlookDraft["Outlook 草稿或发送邮件"]:::output
-        NotionAIChat["Notion AI 侧边栏对话总结"]:::output
+        NotionAIChat["Notion AI 对话总结"]:::output
     end
 
     %% Connections
     Supervisor -->|启动/监控| ProcessA
     Supervisor -->|启动/监控| ProcessB
 
-    OutlookEvents -->|实时捕获| Radar
-    OutlookHistory -->|启动扫描| Watcher
-    NotionWebhook -->|公网请求| API_Server
-    DailyTimer -->|定时触发| ProcessB
+    OutlookEvents --> Radar
+    OutlookHistory --> Watcher
+    NotionWebhook --> API_Server
+    DailyTimer --> ProcessB
 
     Radar -->|添加同步任务| TaskPool
     API_Server -->|添加草稿任务| TaskPool
@@ -108,12 +106,12 @@ graph TD
     Watcher --> OutlookArm
     Watcher --> NotionSync
     
-    NotionSync -->|写入数据| NotionPage
-    OutlookArm -->|执行发信| OutlookDraft
+    NotionSync --> NotionPage
+    OutlookArm --> OutlookDraft
     
-    Watcher -->|IPC 队列(email_synced)| Debounce
+    Watcher -->|IPC 队列| Debounce
     Debounce --> AIController
-    AIController -->|静默交互| NotionAIChat
+    AIController --> NotionAIChat
 ```
 
 ### 1. 模块分工说明
