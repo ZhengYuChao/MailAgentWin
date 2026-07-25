@@ -113,7 +113,7 @@ python notion_auth.py
 ```
 1. 此时系统会弹出一个**可见**的 Chrome 浏览器。
 2. 请在弹出的网页中完成 Notion 的登录（支持扫码或账号密码）。
-3. 登录成功且完整加载出你的 Notion 工作区后，选择你要的AI Model，若不选可以Auto，然后尝试发一条测试消息，接着回到命令行终端中，按下 **回车键 (Enter)**。
+3. 登录成功且完整加载出你的 Notion 工作区后，尝试发一条测试消息（系统会根据 `.env` 中的 `AI_MODEL_EMAIL_SYNC` 和 `AI_MODEL_DAILY_SUMMARY` 自动为您切换模型，如不想自动切换可填 `Auto`），接着回到命令行终端中，按下 **回车键 (Enter)**。
 4. 脚本会自动捕捉并保存当前的 User-Agent 至 `user_agent.txt`，并将 Cookies 和 LocalStorage 状态保存至 `notion_auth.json`。随后浏览器将自动关闭。
 
 ---

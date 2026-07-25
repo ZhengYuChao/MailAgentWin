@@ -195,6 +195,8 @@ python scripts/preflight_check.py
 | `DEBOUNCE_FORCE_SEC` | `int` | `1800` | 强推时间（秒），在此间隔内即便一直同步邮件也必须执行一次 AI 总结 |
 | `NOTION_AI_FALLBACK_WAIT_SEC` | `int` | `120` | 页面上未检测到 AI 停止撰写按钮时的保守等待秒数 |
 | `NOTION_AI_WAIT_TIMEOUT` | `int` | `600` | 等待 Notion AI 当前生成完成的最大超时时间（秒） |
+| `AI_MODEL_EMAIL_SYNC` | `str` | `Sonnet 4.6` | 日常邮件同步操作使用的模型 |
+| `AI_MODEL_DAILY_SUMMARY` | `str` | `GPT-5.6 Sol` | 每日定时深度总结使用的模型 |
 | `NOTION_ACTION_CREATE_DRAFT` | `str` | `35d15375-830d-806b-b799-005aa8637e7e` | Notion 页面上 `"Create Draft"` 按钮对应的 Action ID |
 | `NOTION_ACTION_REPLY_ALL` | `str` | `32c15375-830d-8065-8fbf-005a31068639` | Notion 页面上 `"Reply All"` 按钮对应的 Action ID |
 | `NOTION_ACTION_REPLY` | `str` | `39915375-830d-8079-8c98-005af593110f` | Notion 页面上 `"Reply"` 按钮对应的 Action ID |
