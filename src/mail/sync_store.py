@@ -65,3 +65,64 @@ class SyncStore:
 
     def is_synced(self, entry_id: str) -> bool:
         return self.get_by_entry_id(entry_id) is not None
+
+    def try_claim(self, entry_id: str) -> bool:
+        """Atomically claim an entry_id for processing.
+        Uses INSERT OR IGNORE to prevent race conditions across threads.
+        Returns True if successfully claimed (new), False if already claimed/synced."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO mail_sync (entry_id) VALUES (?)",
+                    (entry_id,)
+                )
+                claimed = cur.rowcount > 0
+                if not claimed:
+                    # Log what already exists for this entry_id
+                    existing = conn.execute(
+                        "SELECT entry_id, message_id, notion_page_id FROM mail_sync WHERE entry_id = ?",
+                        (entry_id,)
+                    ).fetchone()
+                    logger.debug(f"[DEDUP-L1] try_claim REJECTED {entry_id[:32]}: "
+                                 f"existing_row=({existing[0][:24] if existing else 'None'}, "
+                                 f"mid={existing[1][:40] if existing and existing[1] else 'None'}, "
+                                 f"npid={existing[2][:16] if existing and existing[2] else 'None'})")
+                else:
+                    logger.debug(f"[DEDUP-L1] try_claim ACCEPTED {entry_id[:32]}")
+                return claimed
+        except Exception as e:
+            logger.error(f"try_claim failed for {entry_id[:24]}: {e}")
+            return False
+
+    def release_claim(self, entry_id: str):
+        """Release a claimed entry_id on processing failure (allows fallback retry).
+        Only deletes records without notion_page_id (i.e., uncompleted claims)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "DELETE FROM mail_sync WHERE entry_id = ? AND (notion_page_id IS NULL OR notion_page_id = '')",
+                    (entry_id,)
+                )
+        except Exception as e:
+            logger.error(f"release_claim failed for {entry_id[:24]}: {e}")
+
+    def link_entry_id(self, entry_id: str, existing_record: Dict[str, Any]):
+        """Link a new entry_id to an already-synced email (cross-EntryID dedup).
+        Saves a record without message_id to avoid UNIQUE constraint conflict."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO mail_sync 
+                    (entry_id, conversation_id, conversation_index, 
+                     notion_page_url, notion_page_id, parent_page_url, last_synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                """, (entry_id,
+                      existing_record.get('conversation_id', ''),
+                      existing_record.get('conversation_index', ''),
+                      existing_record.get('notion_page_url', ''),
+                      existing_record.get('notion_page_id', ''),
+                      existing_record.get('parent_page_url', '')))
+                logger.info(f"🔗 Linked entry {entry_id[:24]} to existing Notion page "
+                           f"{existing_record.get('notion_page_id', '')[:16]}")
+        except Exception as e:
+            logger.error(f"link_entry_id failed: {e}")

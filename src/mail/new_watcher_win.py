@@ -35,6 +35,14 @@ class WindowsWatcher:
         self.running = False
         self.ai_trigger_queue = ai_trigger_queue
         self.shutdown_event = shutdown_event
+        self._msg_locks = {}
+        self._msg_locks_lock = asyncio.Lock()
+
+    async def _get_msg_lock(self, message_id: str):
+        async with self._msg_locks_lock:
+            if message_id not in self._msg_locks:
+                self._msg_locks[message_id] = asyncio.Lock()
+            return self._msg_locks[message_id]
 
     async def start(self):
         logger.info("🚀 Starting MailAgent Windows Watcher (Central Task Loop)...")
@@ -104,10 +112,8 @@ class WindowsWatcher:
                     finally:
                         if t.type == TaskType.MAIL_SYNC:
                             self._active_sync_tasks -= 1
-                            # 释放 entry_id，允许未来兜底重试重新入队
                             eid = t.payload.get("entry_id", "")
                             if eid:
-                                self._in_progress_entries.discard(eid)
                                 global_task_pool.mark_entry_done(eid)
                         global_task_pool.task_done()
 
@@ -121,63 +127,92 @@ class WindowsWatcher:
 
     async def process_mail_sync(self, entry_id: str, store_id: Optional[str] = None, trigger_ai: bool = True):
         """处理同步任务：获取邮件 -> 转换内容 -> 写入 Notion -> (可选) 触发 AI"""
-        if self.sync_store.is_synced(entry_id):
-            return
+        import time as _time
+        _sync_start = _time.time()
+        _short_eid = entry_id[:32]
+        logger.info(f"🔍 [DEDUP-TRACE] ===== START process_mail_sync entry_id={_short_eid} =====")
 
-        # 防御性去重：如果同一 entry_id 正在被另一个并发任务处理，跳过
-        if entry_id in self._in_progress_entries:
-            logger.debug(f"⏭️ Skipped duplicate in-progress entry: {entry_id[:24]}")
+        # === Layer 1: Atomic SQLite claim ===
+        claimed = self.sync_store.try_claim(entry_id)
+        if not claimed:
+            logger.info(f"⏭️ [DEDUP-L1] Entry already claimed/synced: {_short_eid}")
             return
-        self._in_progress_entries.add(entry_id)
+        logger.info(f"✅ [DEDUP-L1] Claimed entry_id={_short_eid} (new claim)")
 
         fetched = self.arm.fetch_by_entry_id(entry_id, store_id)
         if not fetched:
-            logger.warning(f"Could not fetch email from Outlook: {entry_id[:16]}")
+            logger.warning(f"Could not fetch email from Outlook: {_short_eid}")
+            self.sync_store.release_claim(entry_id)
             return
 
+        logger.info(f"📧 [DEDUP-TRACE] Fetched email: subject='{fetched.subject[:60]}', "
+                    f"message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}, "
+                    f"entry_id={_short_eid}, mailbox={fetched.mailbox}")
 
+        msg_lock = None
+        if fetched.message_id:
+            msg_lock = await self._get_msg_lock(fetched.message_id)
+            await msg_lock.acquire()
 
-        email = Email(
-            message_id=fetched.message_id,
-            subject=fetched.subject,
-            sender=fetched.from_email,
-            sender_name=fetched.from_name,
-            to="; ".join(fetched.to),
-            cc="; ".join(fetched.cc),
-            date=datetime.fromisoformat(fetched.date_utc),
-            content=fetched.html_body or fetched.text_body,
-            content_type="text/html" if fetched.html_body else "text/plain",
-            mailbox=fetched.mailbox,
-            is_read=fetched.is_read,
-            is_flagged=fetched.is_flagged,
-            has_attachments=fetched.has_attachments,
-            thread_id=fetched.conversation_id,
-            in_reply_to=fetched.in_reply_to,
-            internal_id=None,
-        )
-
-        if fetched.has_attachments:
-            try:
-                raw_item = self.arm.get_raw_item(entry_id)
-                if raw_item:
-                    attachments = self.attachment_handler.extract(raw_item)
-                    for att in attachments:
-                        email.attachments.append(Attachment(
-                            filename=att.filename,
-                            content_type=att.content_type,
-                            size=att.size,
-                            path=att.local_path,
-                            content_id=att.content_id,
-                            is_inline=att.is_inline
-                        ))
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to extract attachments for '{email.subject}', "
-                               f"syncing email without attachments: {e}")
-
-        parent_page_url = find_parent_in_db(fetched.conversation_index, self.sync_store)
-        
         try:
+            # === Layer 2: Cross-EntryID dedup by Message-ID ===
+            if fetched.message_id:
+                existing = self.sync_store.get_by_message_id(fetched.message_id)
+                if existing and existing.get('entry_id') != entry_id:
+                    logger.info(f"⏭️ [DEDUP-L2] Email already synced under different EntryID "
+                                f"(Message-ID: {fetched.message_id[:60]})")
+                    self.sync_store.link_entry_id(entry_id, existing)
+                    return
+                elif existing:
+                    logger.info(f"ℹ️ [DEDUP-L2] Same entry_id found in SyncStore")
+                else:
+                    logger.info(f"✅ [DEDUP-L2] Message-ID not in SyncStore, proceeding.")
+            else:
+                logger.warning(f"⚠️ [DEDUP-L2] No Message-ID for entry_id={_short_eid} — L2 skipped")
+
+            email = Email(
+                message_id=fetched.message_id,
+                subject=fetched.subject,
+                sender=fetched.from_email,
+                sender_name=fetched.from_name,
+                to="; ".join(fetched.to),
+                cc="; ".join(fetched.cc),
+                date=datetime.fromisoformat(fetched.date_utc),
+                content=fetched.html_body or fetched.text_body,
+                content_type="text/html" if fetched.html_body else "text/plain",
+                mailbox=fetched.mailbox,
+                is_read=fetched.is_read,
+                is_flagged=fetched.is_flagged,
+                has_attachments=fetched.has_attachments,
+                thread_id=fetched.conversation_id,
+                in_reply_to=fetched.in_reply_to,
+                internal_id=None,
+            )
+
+            if fetched.has_attachments:
+                try:
+                    raw_item = self.arm.get_raw_item(entry_id)
+                    if raw_item:
+                        attachments = self.attachment_handler.extract(raw_item)
+                        for att in attachments:
+                            email.attachments.append(Attachment(
+                                filename=att.filename,
+                                content_type=att.content_type,
+                                size=att.size,
+                                path=att.local_path,
+                                content_id=att.content_id,
+                                is_inline=att.is_inline
+                            ))
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to extract attachments for '{email.subject}': {e}")
+
+            parent_page_url = find_parent_in_db(fetched.conversation_index, self.sync_store)
+            
+            # === Layer 3: Notion-level dedup (check_page_exists inside create_email_page_v2) ===
+            logger.info(f"🔄 [DEDUP-L3] Calling create_email_page_v2 for message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}")
             page_id = await self.notion_sync.create_email_page_v2(email)
+            _elapsed = _time.time() - _sync_start
+            
             if page_id:
                 notion_url = f"https://notion.so/{page_id.replace('-', '')}"
                 
@@ -191,6 +226,8 @@ class WindowsWatcher:
                     notion_page_id=page_id,
                     parent_page_url=parent_page_url or ""
                 )
+                logger.info(f"💾 [DEDUP-TRACE] Saved sync record: entry_id={_short_eid}, "
+                            f"notion_page_id={page_id}")
                 
                 if fetched.mailbox == "Inbox":
                     await self.feishu.notify_important_email({
@@ -205,16 +242,24 @@ class WindowsWatcher:
                         "ai_summary": email.content[:200] + "..."
                     })
                     
-                logger.info(f"✅ Successfully uploaded to Notion: {email.subject}")
+                logger.info(f"✅ [DEDUP-TRACE] Successfully uploaded to Notion: '{email.subject[:50]}' "
+                            f"(entry={_short_eid}, page_id={page_id}, elapsed={_elapsed:.1f}s)")
                 
                 self.arm.mark_as_read(entry_id)
                 
-                # 同步成功后通知 AI Controller
                 if trigger_ai:
                     self._notify_ai_trigger()
-                    
+            else:
+                logger.warning(f"⚠️ [DEDUP-L3] create_email_page_v2 returned None "
+                               f"(likely already exists in Notion). entry_id={_short_eid}")
+                self.sync_store.release_claim(entry_id)
+
         except Exception as e:
-            logger.error(f"Failed to sync email {email.subject}: {e}")
+            self.sync_store.release_claim(entry_id)
+            logger.error(f"❌ [DEDUP-TRACE] Failed to sync email: entry_id={_short_eid}, error={e}")
+        finally:
+            if msg_lock:
+                msg_lock.release()
 
     def _notify_ai_trigger(self):
         """通知 AIWorker 有新邮件已同步，需要触发 AI 处理"""
@@ -242,14 +287,21 @@ class WindowsWatcher:
 
         # 补查的任务按照收发时间排队，并加入全局任务池 (Priority 3)
         new_count = 0
+        skipped_count = 0
         for eid, sid, dt_val in all_items:
             if not self.sync_store.is_synced(eid):
-                payload = {"entry_id": eid, "store_id": sid}
+                payload = {"entry_id": eid, "store_id": sid, "mailbox_type": "catch_up"}
                 ts = dt_val.timestamp() if isinstance(dt_val, datetime) else time.time()
                 global_task_pool.add_task(TaskType.MAIL_SYNC, TaskPriority.LOW, payload, timestamp=ts)
                 new_count += 1
+                if new_count <= 5:
+                    logger.debug(f"[CATCH-UP] Queued: entry_id={eid[:32]}, ts={ts}")
+            else:
+                skipped_count += 1
         
-        logger.info(f"✅ Scanned {len(all_items)} items. Queued {new_count} catch-up tasks (Priority 3 - Low).")
+        logger.info(f"✅ [CATCH-UP] Scanned {len(all_items)} items. "
+                     f"Queued {new_count} catch-up tasks (Priority LOW), "
+                     f"skipped {skipped_count} already-synced.")
 
     async def stop(self):
         """主动停止监听并清理资源"""

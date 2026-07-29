@@ -152,7 +152,9 @@ def _fallback_scan(lookback_seconds: int = 120):
                 log.debug(f"Fallback scan error for folder_kind={folder_kind}: {e}")
         
         if new_count > 0:
-            log.info(f"🔄 Fallback scan: queued {new_count} unsynced email(s) (Priority LOW)")
+            log.info(f"🔄 [RADAR] Fallback scan: queued {new_count} unsynced email(s) (Priority LOW)")
+        else:
+            log.debug(f"[RADAR] Fallback scan: 0 new emails found")
             
     except Exception as e:
         log.debug(f"Fallback scan failed: {e}")
@@ -165,12 +167,12 @@ class OutlookEventSink:
 
     def OnNewMailEx(self, entry_ids: str):
         # entry_ids 是逗号分隔的多个 EntryID
-        for eid in entry_ids.split(","):
-            eid = eid.strip()
-            if eid:
-                payload = {"entry_id": eid, "store_id": None, "mailbox_type": "new"}
-                global_task_pool.add_task(TaskType.MAIL_SYNC, TaskPriority.MEDIUM, payload)
-                log.info(f"NewMailEx queued (Priority 2 - Medium): {eid[:24]}")
+        id_list = [eid.strip() for eid in entry_ids.split(",") if eid.strip()]
+        log.info(f"[RADAR] OnNewMailEx fired: {len(id_list)} entry_id(s)")
+        for eid in id_list:
+            payload = {"entry_id": eid, "store_id": None, "mailbox_type": "new"}
+            global_task_pool.add_task(TaskType.MAIL_SYNC, TaskPriority.MEDIUM, payload)
+            log.info(f"[RADAR] NewMailEx queued (Priority MEDIUM): {eid[:32]}")
 
 class SentFolderEventSink:
     def __init__(self):
@@ -179,10 +181,11 @@ class SentFolderEventSink:
     def OnItemAdd(self, item):
         try:
             eid = getattr(item, 'EntryID', None)
+            subject = str(getattr(item, 'Subject', '<unknown>') or '<unknown>')[:40]
             if eid:
                 payload = {"entry_id": eid, "store_id": None, "mailbox_type": "sent"}
                 global_task_pool.add_task(TaskType.MAIL_SYNC, TaskPriority.MEDIUM, payload)
-                log.info(f"Sent folder ItemAdd queued (Priority 2 - Medium): {eid[:24]}")
+                log.info(f"[RADAR] Sent ItemAdd queued (Priority MEDIUM): {eid[:32]}, subject='{subject}'")
         except Exception as e:
             log.error(f"Error in Sent folder ItemAdd: {e}")
 

@@ -206,6 +206,19 @@ class OutlookComArm:
 
         pa = item.PropertyAccessor
         message_id = self._safe_get(pa, PR_INTERNET_MESSAGE_ID, "")
+        if not message_id:
+            # Generate deterministic synthetic Message-ID for emails without RFC 822 Message-ID
+            # (common for meeting invites, Exchange internal items, calendar responses, etc.)
+            # Uses subject + date + sender to ensure the same email always produces the same ID
+            import hashlib
+            subj = getattr(item, "Subject", "") or ""
+            dt = getattr(item, "ReceivedTime", None)
+            date_key = (f"{dt.year}-{dt.month:02d}-{dt.day:02d}"
+                        f"T{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}") if dt else "nodate"
+            sender = getattr(item, "SenderEmailAddress", "") or ""
+            raw = f"{subj}|{date_key}|{sender}"
+            message_id = f"<{hashlib.sha256(raw.encode('utf-8', errors='replace')).hexdigest()[:40]}@synthetic.mailagent>"
+            logger.debug(f"Generated synthetic Message-ID for '{subj[:40]}': {message_id}")
         in_reply_to = self._safe_get(pa, PR_IN_REPLY_TO, "") or None
         raw_headers = self._safe_get(pa, PR_TRANSPORT_MESSAGE_HEADERS, "")
 

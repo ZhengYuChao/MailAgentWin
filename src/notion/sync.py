@@ -389,11 +389,30 @@ class NotionSync:
 
     async def create_email_page_v2(self, email: Email, skip_parent_lookup: bool = False, calendar_page_id: str = None, meeting_invite: 'MeetingInvite' = None) -> Optional[str]:
         try:
-            logger.info(f"Creating email page (v2): {email.subject}")
-            if email.message_id and await self.client.check_page_exists(email.message_id):
-                existing = await self.client.query_database(filter_conditions={"property": "Message ID", "rich_text": {"equals": email.message_id}})
-                logger.info(f"⏭️ Email already exists in Notion (Message-ID: {email.message_id[:60]}), skipping.")
-                return existing[0].get("id") if existing else None
+            import time as _time
+            _t0 = _time.time()
+            logger.info(f"🔄 [DEDUP-L3] Creating email page (v2): subject='{email.subject[:60]}', "
+                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
+            
+            if email.message_id:
+                logger.info(f"🔍 [DEDUP-L3] Checking Notion for existing page with Message-ID={email.message_id[:60]}...")
+                page_exists = await self.client.check_page_exists(email.message_id)
+                _t1 = _time.time()
+                logger.info(f"🔍 [DEDUP-L3] check_page_exists result={page_exists} "
+                            f"(took {_t1 - _t0:.2f}s, message_id={email.message_id[:60]})")
+                
+                if page_exists:
+                    existing = await self.client.query_database(filter_conditions={"property": "Message ID", "rich_text": {"equals": email.message_id}})
+                    existing_id = existing[0].get("id") if existing else None
+                    logger.info(f"⏭️ [DEDUP-L3] Email already exists in Notion "
+                                f"(Message-ID: {email.message_id[:60]}, "
+                                f"existing_page_id={existing_id}), skipping.")
+                    return existing_id
+            else:
+                logger.warning(f"⚠️ [DEDUP-L3] No Message-ID, Notion dedup check SKIPPED for '{email.subject[:40]}'")
+            
+            logger.info(f"🆕 [DEDUP-L3] Page does NOT exist in Notion, proceeding to create. "
+                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
             
             from src.config import config as app_config
             if app_config.office_convert_enabled:
@@ -415,6 +434,11 @@ class NotionSync:
             email_icon = {"type": "emoji", "emoji": "📤"} if email.mailbox == "发件箱" else {"type": "emoji", "emoji": "📧"}
             page = await self._create_page_with_blocks(properties, children, email_icon)
             page_id = page['id']
+            _t_created = _time.time()
+            logger.info(f"✅ [DEDUP-L3] Notion page CREATED: page_id={page_id}, "
+                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}, "
+                        f"subject='{email.subject[:40]}', "
+                        f"total_elapsed={_t_created - _t0:.2f}s")
             if not skip_parent_lookup and email.thread_id: await self._handle_thread_relations(page_id, email)
             return page_id
         except Exception: raise
