@@ -12,6 +12,8 @@ from src.mail.conversation_index import find_parent_in_db
 from src.mail.attachment_handler import AttachmentHandler
 from src.mail.draft_handler import execute_draft_action
 from src.notion.sync import NotionSync
+from src.mail.icalendar_parser import ICalendarParser
+from src.notion.calendar_sync import NotionCalendarSync
 from src.notify.feishu import FeishuNotifier
 from src.models import Email, Attachment, TaskType, TaskPriority
 from src.config import config
@@ -206,11 +208,33 @@ class WindowsWatcher:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to extract attachments for '{email.subject}': {e}")
 
+            # === Parse calendar invite if any ===
+            ical_parser = ICalendarParser()
+            meeting_invite = None
+            calendar_page_id = None
+            if fetched.html_body or fetched.text_body:
+                source = fetched.raw_headers + "\r\n\r\n" + (fetched.html_body or fetched.text_body)
+                meeting_invite = ical_parser.extract_from_email_source(source)
+                
+            if meeting_invite and config.calendar_database_id:
+                try:
+                    cal_sync = NotionCalendarSync()
+                    calendar_event = ical_parser.to_calendar_event(meeting_invite)
+                    calendar_page_id = await cal_sync.sync_event(calendar_event, sequence=meeting_invite.sequence)
+                    logger.info(f"📅 Synced meeting invite to calendar: {calendar_page_id}")
+                    await cal_sync.close()
+                except Exception as ce:
+                    logger.warning(f"Failed to sync calendar invite: {ce}")
+
             parent_page_url = find_parent_in_db(fetched.conversation_index, self.sync_store)
             
             # === Layer 3: Notion-level dedup (check_page_exists inside create_email_page_v2) ===
             logger.info(f"🔄 [DEDUP-L3] Calling create_email_page_v2 for message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}")
-            page_id = await self.notion_sync.create_email_page_v2(email)
+            page_id = await self.notion_sync.create_email_page_v2(
+                email, 
+                calendar_page_id=calendar_page_id, 
+                meeting_invite=meeting_invite
+            )
             _elapsed = _time.time() - _sync_start
             
             if page_id:

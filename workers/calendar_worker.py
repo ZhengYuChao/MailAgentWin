@@ -1,0 +1,95 @@
+"""
+CalendarWorker 后台任务
+
+定期从 Outlook 日历文件夹中读取事件并同步到 Notion 日历库。
+设计为在 MailWorker 进程中作为 async task 运行。
+
+Usage:
+    from workers.calendar_worker import start_calendar_sync
+    asyncio.create_task(start_calendar_sync(shutdown_event))
+"""
+
+import asyncio
+from typing import Set
+from loguru import logger
+from multiprocessing.synchronize import Event as MPEvent
+
+from src.config import config
+from src.notion.calendar_sync import NotionCalendarSync
+from src.mail.outlook_calendar_reader import OutlookCalendarReader
+
+
+async def start_calendar_sync(shutdown_event: MPEvent):
+    """日历同步主循环"""
+    if not config.calendar_database_id:
+        logger.info("ℹ️ CALENDAR_DATABASE_ID not set, Calendar Sync Worker is disabled.")
+        return
+
+    logger.info("🚀 Starting Calendar Sync Worker...")
+
+    sync = NotionCalendarSync()
+    reader = OutlookCalendarReader()
+
+    interval = config.calendar_check_interval
+    past_days = config.calendar_past_days
+    future_days = config.calendar_future_days
+
+    # 记录已处理过的 event_ids（简单内存去重）
+    processed_ids: Set[str] = set()
+
+    try:
+        # 初次启动时，从 Notion 获取已有的所有 Event ID 避免全量重复更新
+        logger.info("📅 Initializing calendar sync, fetching existing event IDs...")
+        processed_ids = await sync.query_all_event_ids()
+        logger.info(f"📅 Found {len(processed_ids)} existing calendar events in Notion.")
+
+        while not shutdown_event.is_set():
+            try:
+                # 1. 从 Outlook 读取日历事件
+                events = await asyncio.to_thread(
+                    reader.read_events,
+                    past_days=past_days,
+                    future_days=future_days,
+                )
+
+                if events:
+                    # 2. 同步到 Notion
+                    # 由于 events 可能包含不需要更新的条目，这里将序列号设为 1
+                    # （对于 COM 读取的，序列号机制不是非常适用，依赖于 last_modified 或直接 upsert）
+                    # 对于纯 upsert，我们可以每次都去更新（NotionCalendarSync 内部会检查是否存在）
+                    
+                    # 过滤一下，避免频繁无效更新
+                    # （如果是非常频繁更新的库，可以加更精细的 checksum 或 modified 校验）
+                    success_count = 0
+                    for event in events:
+                        if shutdown_event.is_set():
+                            break
+
+                        # 这里简单处理：全量 upsert。NotionCalendarSync_find_existing 
+                        # 里有 sequence 校验，但日历文件夹里的可能没有 sequence。
+                        # 为了性能，实际应用中可以加上更细的本地 hash 比对。
+                        # 这里复用了 sync.sync_event
+                        page_id = await sync.sync_event(event)
+                        if page_id:
+                            processed_ids.add(event.event_id)
+                            success_count += 1
+                            
+                    if success_count > 0:
+                        logger.info(f"✅ Calendar sync loop complete: {success_count} events synced.")
+
+            except Exception as e:
+                logger.error(f"❌ Error in calendar sync loop: {e}")
+
+            # 休眠 interval 秒，支持响应 shutdown_event
+            for _ in range(interval):
+                if shutdown_event.is_set():
+                    break
+                await asyncio.sleep(1)
+
+    except asyncio.CancelledError:
+        logger.info("Calendar Sync Worker cancelled.")
+    except Exception as e:
+        logger.critical(f"Calendar Sync Worker crashed: {e}")
+    finally:
+        await sync.close()
+        logger.info("Calendar Sync Worker stopped.")

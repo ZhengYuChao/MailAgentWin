@@ -36,6 +36,7 @@ def run_mail_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
     from src.mail.new_watcher_win import WindowsWatcher
     from src.api.tunnel import global_tunnel_manager
     from src.api.server import start_api_server
+    from workers.calendar_worker import start_calendar_sync
 
     async def _run():
         # 1. 启动内网穿透隧道及 API Server (按需)
@@ -50,6 +51,10 @@ def run_mail_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
 
         # 2. 启动 Watcher（传入 IPC 队列和关停事件）
         watcher = WindowsWatcher(ai_trigger_queue=ai_trigger_queue, shutdown_event=shutdown_event)
+        
+        # 3. 启动日历同步后台任务 (按需)
+        if config.calendar_database_id:
+            asyncio.create_task(start_calendar_sync(shutdown_event))
         try:
             await watcher.start()
         except asyncio.CancelledError:
