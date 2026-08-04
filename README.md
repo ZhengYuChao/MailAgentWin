@@ -198,9 +198,21 @@ python scripts/preflight_check.py
 | `NOTION_ACTION_CREATE_DRAFT` | `str` | `35d15375-830d-806b-b799-005aa8637e7e` | Notion 页面上 `"Create Draft"` 按钮对应的 Action ID |
 | `NOTION_ACTION_REPLY_ALL` | `str` | `32c15375-830d-8065-8fbf-005a31068639` | Notion 页面上 `"Reply All"` 按钮对应的 Action ID |
 | `NOTION_ACTION_REPLY` | `str` | `39915375-830d-8079-8c98-005af593110f` | Notion 页面上 `"Reply"` 按钮对应的 Action ID |
+| `NOTION_ACTION_CC_MORE` | `str` | `""` | Notion 页面上 `"CC More"` 按钮对应的 Action ID |
 | `FEISHU_NOTIFY_ENABLED` | `bool` | `False` | 是否启用飞书通知卡片 |
 | `FEISHU_APP_ID`/`FEISHU_APP_SECRET` | `str` | `""` | 飞书开放平台应用的凭证（用以获取 Token 进行高级发送） |
 | `FEISHU_WEBHOOK_URL` | `str` | `""` | 飞书自定义群机器人的 Webhook 地址 |
+
+### 4. Notion Webhook 与 CC More 按钮配置
+为了在 Notion 中触发直接发送邮件（例如 Reply、CC More 等），您需要在 Notion 的 Email 数据库中：
+1. **添加目标字段**：
+   - 针对草稿回复，系统读取 `Reply Suggestion` 字段。
+   - 针对 **CC More**（增加抄送人直接发送），您必须在数据库中新建一个字段，名称精确命名为 **`CC`** 或 **`CC More`**（类型可以是 Text 或 Email）。在点击 CC More 按钮前，需先在页面中填入抄送人邮箱（多邮箱可通过分号分隔）。
+2. **配置 Button Automation**：
+   - 在 Notion 数据库中新增一个 Button 属性（或直接使用 Automation）。
+   - 选择动作为 **Send Webhook**。
+   - 将内网穿透输出的公网 URL（例如 `https://xxxx.ngrok-free.app`）填入。
+   - 提取该 Automation 的 Action ID（可以从运行后台日志中获得），并配置到 `.env` 文件对应的 `NOTION_ACTION_xxx` 中。
 
 ---
 

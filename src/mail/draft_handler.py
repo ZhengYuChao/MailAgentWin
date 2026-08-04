@@ -38,6 +38,79 @@ def _start_progress_hider(duration: float = 15.0):
     t.start()
     return t
 
+def _append_cc_without_duplicates(mail_item, cc_more: str):
+    """
+    Append CC emails to mail_item without duplicating them.
+    Checks existing To and CC lists.
+    """
+    if not cc_more:
+        return
+    import re
+    try:
+        existing_identifiers = set()
+        
+        def extract_identifiers(field_str):
+            if not field_str:
+                return
+            parts = re.split(r'[;,]', str(field_str))
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', part)
+                if match:
+                    existing_identifiers.add(match.group().lower())
+                    name_part = re.sub(r'<.*?>', '', part).replace('"', '').replace("'", '').strip()
+                    if name_part:
+                        existing_identifiers.add(name_part.lower())
+                else:
+                    existing_identifiers.add(part.lower())
+                
+        extract_identifiers(getattr(mail_item, "To", ""))
+        extract_identifiers(getattr(mail_item, "CC", ""))
+        
+        new_ccs = []
+        cc_candidates = re.split(r'[;,]', cc_more)
+        for c in cc_candidates:
+            c = c.strip()
+            if not c:
+                continue
+                
+            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', c)
+            if match:
+                email_val = match.group().lower()
+                name_part = re.sub(r'<.*?>', '', c).replace('"', '').replace("'", '').strip()
+                
+                is_duplicate = False
+                if email_val in existing_identifiers:
+                    is_duplicate = True
+                elif name_part and name_part.lower() in existing_identifiers:
+                    is_duplicate = True
+                    
+                if not is_duplicate:
+                    new_ccs.append(c)
+                    existing_identifiers.add(email_val)
+                    if name_part:
+                        existing_identifiers.add(name_part.lower())
+            else:
+                # Fallback for Exchange internal names or just plain names
+                if c.lower() not in existing_identifiers:
+                    new_ccs.append(c)
+                    existing_identifiers.add(c.lower())
+                    
+        if new_ccs:
+            current_cc = getattr(mail_item, "CC", "")
+            additional_cc_str = "; ".join(new_ccs)
+            if current_cc:
+                mail_item.CC = str(current_cc) + "; " + additional_cc_str
+            else:
+                mail_item.CC = additional_cc_str
+            logger.info(f"Appended additional CC (deduplicated): {additional_cc_str}")
+        else:
+            logger.info(f"No additional CC needed (all already in To/CC).")
+    except Exception as e:
+        logger.warning(f"Failed to append CC: {e}")
+
 def execute_draft_action(payload: dict):
     """
     通过 Outlook COM 执行发送或保存草稿。
@@ -179,17 +252,6 @@ def execute_draft_action(payload: dict):
                 except Exception as e:
                     logger.warning(f"Reply() failed with exception: {e}")
             
-        if reply is not None and cc_more:
-            try:
-                current_cc = getattr(reply, "CC", "")
-                if current_cc:
-                    reply.CC = str(current_cc) + ";" + cc_more
-                else:
-                    reply.CC = cc_more
-                logger.info(f"Appended additional CC: {cc_more}")
-            except Exception as e:
-                logger.warning(f"Failed to append CC: {e}")
-            
         if reply is None:
             logger.warning("Reply() also failed. Creating a NEW mail item as fallback...")
             try:
@@ -207,6 +269,9 @@ def execute_draft_action(payload: dict):
                 return
         else:
             reply.Body = reply_suggestion + "\n\n" + getattr(reply, "Body", "")
+
+        if reply is not None and cc_more:
+            _append_cc_without_duplicates(reply, cc_more)
 
         # 3. Final Action: Send or Save (with configurable timeout)
         publish_timeout = config.outlook_publish_timeout_sec

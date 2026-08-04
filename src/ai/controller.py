@@ -275,12 +275,12 @@ class AIController:
                     for m in known_models:
                         if m not in seen:
                             seen.add(m)
-                            # 使用 :text-is() 进行精确的文本匹配，避免误匹配到带有这些关键词的普通邮件内容（如 "Auto"）
-                            selector_parts.append(f"[role='button']:text-is('{m}')")
-                            selector_parts.append(f"button:text-is('{m}')")
-                            selector_parts.append(f"div[class*='model']:text-is('{m}')")
-                            selector_parts.append(f"div:text-is('{m}')")
-                            selector_parts.append(f"span:text-is('{m}')")
+                            # 使用 :has-text() 替代 :text-is() 以支持部分匹配 (如 "Claude 3.5 Sonnet")
+                            # 为了避免匹配到大块文本容器，我们严格限制在 button 和具有 popup 属性等交互元素上
+                            selector_parts.append(f"[role='button']:has-text('{m}')")
+                            selector_parts.append(f"button:has-text('{m}')")
+                            selector_parts.append(f"[aria-haspopup]:has-text('{m}')")
+                            selector_parts.append(f"div[class*='model']:has-text('{m}')")
                     
                     full_selector = ", ".join(selector_parts)
                     trigger = page.locator(full_selector).first
@@ -320,6 +320,37 @@ class AIController:
                                     menu_found = await menu_item.is_visible(timeout=2000)
                                 except Exception:
                                     pass
+
+                            # 新增：适配 Notion AI 新版界面的 "Older models" 二级菜单
+                            if not menu_found:
+                                logger.info("ℹ️ Model not found in primary list, attempting to scroll and look for 'Older models'...")
+                                # 尝试按几下 PageDown，应对可能有虚拟滚动的情况
+                                for _ in range(2):
+                                    await page.keyboard.press("PageDown")
+                                    await asyncio.sleep(0.3)
+                                
+                                older_models_btn = page.get_by_text("Older models", exact=False).first
+                                try:
+                                    if await older_models_btn.is_visible(timeout=1000):
+                                        logger.info("ℹ️ Clicking 'Older models' to reveal more options...")
+                                        await older_models_btn.click(delay=random.randint(50, 150))
+                                        await asyncio.sleep(random.uniform(1.2, 2.0))
+                                except Exception:
+                                    pass
+                                
+                                # 在（可能展开了 Older models）列表里重新查找目标模型
+                                menu_item = page.locator(f"[role='option']:has-text('{target_model_name}'), [role='menuitem']:has-text('{target_model_name}'), [role='menuitemradio']:has-text('{target_model_name}'), div[class*='option']:has-text('{target_model_name}')").first
+                                try:
+                                    menu_found = await menu_item.is_visible(timeout=2000)
+                                except Exception:
+                                    pass
+                                    
+                                if not menu_found:
+                                    menu_item = page.get_by_text(target_model_name, exact=False).first
+                                    try:
+                                        menu_found = await menu_item.is_visible(timeout=2000)
+                                    except Exception:
+                                        pass
                             
                             if menu_found:
                                 logger.info(f"✅ Found target model '{target_model_name}' in dropdown menu, selecting...")

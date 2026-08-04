@@ -15,6 +15,12 @@ def extract_property_text(prop_data):
         return "".join([t.get("plain_text", "") for t in prop_data.get("rich_text", [])])
     elif prop_data.get("type") == "title":
         return "".join([t.get("plain_text", "") for t in prop_data.get("title", [])])
+    elif prop_data.get("type") == "email":
+        return prop_data.get("email") or ""
+    elif prop_data.get("type") == "url":
+        return prop_data.get("url") or ""
+    elif prop_data.get("type") == "phone_number":
+        return prop_data.get("phone_number") or ""
     return ""
 
 class WebhookHandler(BaseHTTPRequestHandler):
@@ -109,7 +115,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         reply_suggestion_prop = properties.get("Reply Suggestion")
         draft_action_prop = properties.get("Draft Action")
         from_prop = properties.get("From")
-        cc_more_prop = properties.get("CC More")
+        cc_more_prop = properties.get("CC More") or properties.get("CC")
 
         message_id = extract_property_text(message_id_prop).strip()
         thread_id = extract_property_text(thread_id_prop).strip()
@@ -132,6 +138,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         CREATE_DRAFT_ACTION_ID = config.notion_action_create_draft
         SEND_DRAFT_ACTION_ID = config.notion_action_reply_all
         REPLY_ACTION_ID = config.notion_action_reply
+        CC_MORE_ACTION_ID = config.notion_action_cc_more
         
         final_action = "save"
         prop_action = extract_property_text(draft_action_prop).strip().lower() if draft_action_prop else ""
@@ -142,10 +149,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             final_action = "reply_all"
         elif action_id == REPLY_ACTION_ID:
             final_action = "reply"
+        elif action_id == CC_MORE_ACTION_ID:
+            final_action = "reply_all"
         else:
             if prop_action == "create draft":
                 final_action = "save"
-            elif prop_action in ["send draft", "reply all"]:
+            elif prop_action in ["send draft", "reply all", "cc more"]:
                 final_action = "reply_all"
             elif prop_action == "reply":
                 final_action = "reply"

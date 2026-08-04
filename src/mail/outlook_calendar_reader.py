@@ -62,12 +62,10 @@ class OutlookCalendarReader:
 
     def _ensure_com_init(self):
         """确保 COM 已初始化（线程安全）"""
-        if not self._initialized:
-            try:
-                pythoncom.CoInitialize()
-            except Exception:
-                pass  # 已在当前线程初始化过
-            self._initialized = True
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass  # 已在当前线程初始化过
 
     def read_events(
         self,

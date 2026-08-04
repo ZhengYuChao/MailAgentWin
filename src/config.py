@@ -253,7 +253,11 @@ class Config(BaseSettings):
     )
     notion_action_reply: str = Field(
         default="39915375-830d-8079-8c98-005af593110f", env="NOTION_ACTION_REPLY",
-        description="Notion 'Reply' 按钮的 action_id"
+        description="单人回复(不带其他收件人)按钮对应的 Notion 内部 Button Action ID"
+    )
+    notion_action_cc_more: str = Field(
+        default="", env="NOTION_ACTION_CC_MORE",
+        description="新增抄送人按钮对应的 Notion 内部 Button Action ID"
     )
 
 config = Config()
