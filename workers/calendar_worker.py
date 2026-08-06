@@ -61,18 +61,27 @@ async def start_calendar_sync(shutdown_event: MPEvent):
                     # 过滤一下，避免频繁无效更新
                     # （如果是非常频繁更新的库，可以加更精细的 checksum 或 modified 校验）
                     success_count = 0
+                    consecutive_failures = 0
                     for event in events:
                         if shutdown_event.is_set():
                             break
 
-                        # 这里简单处理：全量 upsert。NotionCalendarSync_find_existing 
-                        # 里有 sequence 校验，但日历文件夹里的可能没有 sequence。
-                        # 为了性能，实际应用中可以加上更细的本地 hash 比对。
-                        # 这里复用了 sync.sync_event
+                        # 连续失败 3 次说明大概率是网络问题，跳过剩余事件
+                        if consecutive_failures >= 3:
+                            logger.warning(
+                                f"⚠️ {consecutive_failures} consecutive sync failures, "
+                                f"likely network issue. Skipping remaining "
+                                f"{len(events) - success_count - consecutive_failures} events."
+                            )
+                            break
+
                         page_id = await sync.sync_event(event)
                         if page_id:
                             processed_ids.add(event.event_id)
                             success_count += 1
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
                             
                     if success_count > 0:
                         logger.info(f"✅ Calendar sync loop complete: {success_count} events synced.")

@@ -201,7 +201,7 @@ class OutlookComArm:
                              OL_MEETING_RESPONSE_NEG_CLASS, OL_MEETING_RESPONSE_POS_CLASS, 
                              OL_MEETING_RESPONSE_TEN_CLASS, OL_MEETING_CANCELLATION_CLASS):
             subject = getattr(item, "Subject", "") or "<No Subject>"
-            logger.warning(f"Ignored non-mail item (Class: {item.Class}, Subject: '{subject}', EntryID: {entry_id[:16]})")
+            logger.debug(f"Ignored non-mail item (Class: {item.Class}, Subject: '{subject}', EntryID: {entry_id[:16]})")
             return None
 
         pa = item.PropertyAccessor

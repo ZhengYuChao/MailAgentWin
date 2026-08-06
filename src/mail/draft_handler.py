@@ -88,7 +88,7 @@ def _append_cc_without_duplicates(mail_item, cc_more: str):
                     is_duplicate = True
                     
                 if not is_duplicate:
-                    new_ccs.append(c)
+                    new_ccs.append(email_val)
                     existing_identifiers.add(email_val)
                     if name_part:
                         existing_identifiers.add(name_part.lower())
@@ -99,13 +99,15 @@ def _append_cc_without_duplicates(mail_item, cc_more: str):
                     existing_identifiers.add(c.lower())
                     
         if new_ccs:
-            current_cc = getattr(mail_item, "CC", "")
-            additional_cc_str = "; ".join(new_ccs)
-            if current_cc:
-                mail_item.CC = str(current_cc) + "; " + additional_cc_str
-            else:
-                mail_item.CC = additional_cc_str
-            logger.info(f"Appended additional CC (deduplicated): {additional_cc_str}")
+            for cc_email in new_ccs:
+                try:
+                    recip = mail_item.Recipients.Add(cc_email)
+                    recip.Type = 2  # olCC
+                    recip.Resolve()
+                except Exception as e:
+                    logger.warning(f"Error adding CC recipient {cc_email}: {e}")
+            
+            logger.info(f"Appended additional CC (deduplicated): {'; '.join(new_ccs)}")
         else:
             logger.info(f"No additional CC needed (all already in To/CC).")
     except Exception as e:

@@ -253,6 +253,15 @@ class AIController:
                 with open(prompt_file, "r", encoding="utf-8") as f:
                     prompt_text = f.read().strip()
                     
+            # 移除可能拦截点击的弹窗 (如 "Open in Notion's desktop app?")
+            try:
+                await page.evaluate('''() => {
+                    document.querySelectorAll('.notion-overlay-container').forEach(el => el.remove());
+                }''')
+                logger.info("ℹ️ Cleaned up Notion overlay containers.")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to clean up overlay containers: {e}")
+
             # 尝试寻找并切换 AI 模型
             if action == "scheduled_daily_sync":
                 target_model_name = config.ai_model_daily_summary.strip()

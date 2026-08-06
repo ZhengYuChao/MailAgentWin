@@ -143,7 +143,7 @@ class WindowsWatcher:
 
         fetched = self.arm.fetch_by_entry_id(entry_id, store_id)
         if not fetched:
-            logger.warning(f"Could not fetch email from Outlook: {_short_eid}")
+            logger.debug(f"Could not fetch email from Outlook: {_short_eid}")
             self.sync_store.release_claim(entry_id)
             return
 

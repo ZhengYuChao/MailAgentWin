@@ -16,6 +16,8 @@ Usage:
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone, timedelta
 from loguru import logger
+import httpx
+import httpcore
 
 from src.models import CalendarEvent, EventStatus
 from src.notion.client import NotionClient
@@ -32,16 +34,35 @@ class NotionCalendarSync:
         self.calendar_db_id = config.calendar_database_id
         # 缓存 data_source_id
         self._ds_id: Optional[str] = None
+        # 负面缓存：网络不可达时避免反复请求
+        self._ds_id_fail_until: Optional[datetime] = None
 
     async def close(self):
         """关闭 HTTP 会话"""
         await self.client.close()
 
     async def _get_ds_id(self) -> str:
-        """获取日历库的 data_source_id（带缓存）"""
-        if not self._ds_id:
+        """获取日历库的 data_source_id（带缓存 + 负面缓存）
+
+        正面缓存：成功获取后永久缓存（直到进程重启）。
+        负面缓存：网络异常时缓存 60 秒，避免每个事件都重复失败。
+        """
+        if self._ds_id:
+            return self._ds_id
+
+        # 检查负面缓存
+        if self._ds_id_fail_until and datetime.now(timezone.utc) < self._ds_id_fail_until:
+            raise ConnectionError("Notion API unreachable (cached failure, will retry later)")
+
+        try:
             self._ds_id = await self.client.get_data_source_id(self.calendar_db_id)
-        return self._ds_id
+            self._ds_id_fail_until = None  # 成功后清除负面缓存
+            return self._ds_id
+        except (httpx.ConnectError, httpcore.ConnectError, ConnectionError, OSError) as e:
+            # 网络类异常：设置 60 秒负面缓存
+            self._ds_id_fail_until = datetime.now(timezone.utc) + timedelta(seconds=60)
+            logger.warning(f"Notion API unreachable, negative cache set for 60s: {type(e).__name__}")
+            raise
 
     # ─── 核心公开方法 ───────────────────────────────────
 
