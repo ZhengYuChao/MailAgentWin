@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field, ConfigDict
 from typing import List
+import zoneinfo
 
 class Config(BaseSettings):
     """配置类"""
@@ -20,6 +21,8 @@ class Config(BaseSettings):
     mail_account_name: str = Field(default="Exchange", env="MAIL_ACCOUNT_NAME")
     mail_account_url_prefix: str = Field(default="ews://", env="MAIL_ACCOUNT_URL_PREFIX", description="SQLite 账户 URL 前缀过滤（如 ews:// 只匹配 Exchange）")
     mail_inbox_name: str = Field(default="收件箱", env="MAIL_INBOX_NAME")
+    
+    app_timezone: str = Field(default="America/Los_Angeles", env="APP_TIMEZONE", description="默认时区")
 
     # 日志配置
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
@@ -259,5 +262,22 @@ class Config(BaseSettings):
         default="", env="NOTION_ACTION_CC_MORE",
         description="新增抄送人按钮对应的 Notion 内部 Button Action ID"
     )
+    notion_action_forward: str = Field(
+        default="", env="NOTION_ACTION_FORWARD"
+    )
+    notion_action_new_mail: str = Field(
+        default="", env="NOTION_ACTION_NEW_MAIL"
+    )
+    notion_action_new_mail_draft: str = Field(
+        default="", env="NOTION_ACTION_NEW_MAIL_DRAFT"
+    )
+    new_mail_database_id: str = Field(
+        default="", env="NEW_MAIL_DATABASE_ID"
+    )
+
+    @property
+    def tz(self) -> zoneinfo.ZoneInfo:
+        return zoneinfo.ZoneInfo(self.app_timezone)
+
 
 config = Config()

@@ -21,7 +21,7 @@ from src.models import CalendarEvent, EventStatus, Attendee
 from src.config import config
 
 
-BEIJING_TZ = timezone(timedelta(hours=8))
+
 
 # Outlook 常量
 OL_APPOINTMENT = 26        # olAppointment
@@ -336,7 +336,7 @@ class OutlookCalendarReader:
             py_dt = datetime(
                 dt.year, dt.month, dt.day,
                 dt.hour, dt.minute, dt.second,
-                tzinfo=BEIJING_TZ,  # Outlook COM 返回的是本地时间
+                tzinfo=config.tz,  # Outlook COM 返回的是本地时间
             )
             return py_dt
         except Exception:

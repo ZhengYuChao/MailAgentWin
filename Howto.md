@@ -50,12 +50,34 @@
 *   `NOTION_ACTION_CREATE_DRAFT`: 填入 Notion 数据库中 `"Create Draft"` 按钮对应的 Action ID。
 *   `NOTION_ACTION_REPLY_ALL`: 填入 Notion 数据库中 `"Reply All"` 按钮对应的 Action ID。
 *   `NOTION_ACTION_REPLY`: 填入 Notion 数据库中 `"Reply"` 按钮对应的 Action ID。
+*   `NOTION_ACTION_FORWARD`: （可选）填入 Notion 数据库中 `"Forward"` 转发按钮对应的 Action ID。
+*   `NOTION_ACTION_NEW_MAIL`: （可选）新建并发送邮件的按钮 Action ID（需配合 `NEW_MAIL_DATABASE_ID` 使用）。
+*   `NOTION_ACTION_NEW_MAIL_DRAFT`: （可选）新建草稿的按钮 Action ID。
+*   `NEW_MAIL_DATABASE_ID`: （可选）新建邮件专用的 Notion 数据库 ID，需包含 `Subject`/`Name`、`To`、`CC More`、`Email Body` 等字段。
+
+### 4. 可选功能配置
+
+#### LLM Agent（本地大模型直接处理）
+如需用本地 LLM Agent 读取和写入 Notion AI 字段（不依赖 Playwright 浏览器自动化）：
+*   `LLM_AGENT_ENABLED=true`
+*   `LLM_API_BASE`: Anthropic Messages 兼容网关地址。
+*   `LLM_API_KEY`: 网关 API Key。
+*   `LLM_MODEL`: 模型名（默认 `claude-sonnet-4-6`）。
+*   `LLM_INBOX_PROMPT_PATH`/`LLM_SENT_PROMPT_PATH`: 收/发件箱 Prompt 模板路径。
+
+#### 飞书告警（错误/崩溃告警）
+*   `ALERT_ENABLED=true`: 启用独立的飞书告警机器人。
+*   `ALERT_FEISHU_WEBHOOK_URL`: 告警机器人 Webhook 地址（与日常通知相独立）。
+*   `ALERT_LEVELS`: 默认 `critical,error,warning`。
+
+#### 防锁屏保活
+*   `KEEP_ALIVE_ENABLED=true`: 防止 Windows 息屏导致 Playwright 无头浏览器失联（长时间运行时建议开启）。
 
 ---
 
 ## 📂 Notion 页面与数据库配置要求 (核心依赖)
 
-MailAgent 依赖于 Notion API 写入邮件，并使用 Notion AI 完成智能处理。你需要提前在 Notion 中建立以下页面或数据库，并确保与 [prompt.txt](prompt.txt) / [prompt_schedule.txt](prompt_schedule.txt) 中所指示的字段和数据库名称完全一致。
+MailAgent 依赖于 Notion API 写入邮件，并使用 Notion AI 完成智能处理。你需要提前在 Notion 中建立以下页面或数据库，并确保与 [prompt.txt](prompt.txt) / [prompt_daily.txt](prompt_daily.txt) 中所指示的字段和数据库名称完全一致。
 
 ### 1. 邮件同步数据库
 *   **数据库命名**：建议命名为 `《我的邮件｜[Adam] Email》`（与 `prompt.txt` 中的名称匹配）。
@@ -70,11 +92,18 @@ MailAgent 依赖于 Notion API 写入邮件，并使用 Notion AI 完成智能�
     *   `Action Required` (Checkbox 类型)：指示是否需要行动。
     *   `Action Type` (Select 类型)：存放行动类型。
     *   `Reply Suggestion` (Text 类型)：AI 建议的回信草稿内容。
-    *   `Urgency Reason` (Text 类型)：紧急原因。
-    *   `Message ID` / `Thread ID` (Text 类型)：保存邮件的唯一标识，在反向 Webhook 中必选。
+*   **界面效果示例与反向操作按钮**：
+    同步后的 Notion 数据库页面会包含 AI 生成的各项总结属性，以及顶部配置好的反向交互按钮（`Create Draft`、`Reply All`、`Reply`、`Forward` 等，参考图片：[email-example.png](./img/email-example.png)）：
+
+    ![Notion 邮件同步与 AI 分析效果图](./img/email-example.png)
+
+*   **全新建邮件/草稿数据库示例**：
+    若配置了新建邮件数据库（`NEW_MAIL_DATABASE_ID`），页面效果如下（包含 `To`、`CC More`、`Subject`、`Email Body` 等字段，参考图片：[email-draft-example.png](./img/email-draft-example.png)）：
+
+    ![Notion 新建邮件/草稿效果图](./img/email-draft-example.png)
 
 ### 2. 会议记录页面/数据库 (用于定时任务)
-*   **数据库/页面命名**：建议命名为 `[Adam]专属AI会议记录`（与 `prompt_schedule.txt` 中的名称匹配）。
+*   **数据库/页面命名**：建议命名为 `[Adam]专属AI会议记录`（与 `prompt_daily.txt` 中的名称匹配）。
 *   **必需字段属性 (Properties)**：
     *   `Status` (Select 或 Status 类型)：可选项必须包含 `进行中`、`已完成`。
     *   `Meeting Theme` (Text/Title 类型)：会议主题。
@@ -85,8 +114,8 @@ MailAgent 依赖于 Notion API 写入邮件，并使用 Notion AI 完成智能�
 *   **[prompt.txt](prompt.txt) (实时触发)**：
     *   当有新邮件被同步时，MailAgent 会在静默期（`DEBOUNCE_QUIET_SEC`）后唤起 Notion AI，并将 `prompt.txt` 中的内容作为提问发送给 Notion AI。
     *   Notion AI 接收到指令后，会主动去 `《我的邮件｜[Adam] Email》` 数据库中检索状态为 `未处理`/`AI Reviewed` 的邮件，阅读正文并自动补齐字段（如生成 `AI Summary`，若需回复则生成 `Reply Suggestion`），并将状态更新为 `已同步`。
-*   **[prompt_schedule.txt](prompt_schedule.txt) (每日定时任务)**：
-    *   每日早上 `07:00` 时，定时任务会把 `prompt_schedule.txt` 的内容发给 Notion AI。
+*   **[prompt_daily.txt](prompt_daily.txt) (每日定时任务)**：
+    *   每日早上 `07:00` 时，定时任务会把 `prompt_daily.txt` (或者 `prompt_daily_1.txt`, `prompt_daily_2.txt` 等) 的内容依次发给 Notion AI。
     *   Notion AI 会读取 `[Adam]专属AI会议记录` 并整理完成状态和主题。
 *   **`NOTION_AI_PAGE_URL` 页面建议**：
     *   这应该是一个可以启用 Notion AI Chat 的页面链接（例如 `https://app.notion.com/ai` 或你在 Notion 中自建的一个专门的 AI page）。
@@ -142,21 +171,30 @@ python main.py
 
 ## 🔗 第六步：在 Notion 中配置反向按钮 (可选)
 
-要在 Notion 中使用反向按钮（即时在本地生成 Outlook 草稿或发送信件）：
+要在 Notion 中使用反向按钮（即时在本地生成 Outlook 草稿、回复、转发或发送新邮件）：
 1. 观察 [main.py](main.py) 启动时的控制台输出，或者查看 `logs/mailagent.log` 日志文件，找到穿透出来的公网域名（例如：`https://xxxx.ngrok-free.app`）。
-2. 在 Notion 数据库中，创建三个 Button（按钮）类型属性。例如在页面中可以直观呈现为交互按钮（参考图片：[button.png](./img/button.png)）：
+2. 在 Notion 数据库中，创建 Button（按钮）类型属性。例如在页面中可以直观呼现为交互按钮（参考图片：[button.png](./img/button.png)）：
 
    ![Notion 页面中的回复动作按钮](./img/button.png)
 
 3. 配置按钮触发时的动作为：**“发送 HTTP 请求 (Send HTTP Request)”**。
    *   **请求类型**：`POST`
    *   **请求 URL**：`https://xxxx.ngrok-free.app`（直接填入你的公网域名即可）
-4. 该请求的 Action ID 需和 [.env](.env) 中配置的值保持一致。具体的自动化接口触发参数及动作映射配置请参考下图（参考图片：[automation.png](./img/automation.png)）：
+4. 当前支持以下五种动作（通过 Action ID 区分，也可由 `Draft Action` 字段 fallback 判断）：
+   | 按钮名 | Action | `.env` 配置项 | 说明 |
+   | :--- | :--- | :--- | :--- |
+   | Create Draft | `save` | `NOTION_ACTION_CREATE_DRAFT` | 将草稿存入本地发件箖 |
+   | Reply All | `reply_all` | `NOTION_ACTION_REPLY_ALL` | ReplyAll + Send |
+   | Reply | `reply` | `NOTION_ACTION_REPLY` | Reply + Send |
+   | Forward | `forward` | `NOTION_ACTION_FORWARD` | Forward + Send，需 `To` 字段填写转发目标 |
+   | New Mail | `new_mail` | `NOTION_ACTION_NEW_MAIL` | 全新建邮件并发送（从 `NEW_MAIL_DATABASE_ID` 读取数据） |
+   | New Mail Draft | `new_mail_draft` | `NOTION_ACTION_NEW_MAIL_DRAFT` | 全新建邮件并保存草稿 |
+5. 该请求的 Action ID 需和 [.env](.env) 中配置的値保持一致。具体的自动化接口触发参数及动作映射配置请参考下图（参考图片：[automation.png](./img/automation.png)）：
 
    ![Notion 自动化动作触发配置](./img/automation.png)
 
    > [!TIP]
-   > 确保 Notion Webhook 的 Payload JSON 正确绑定了邮件页面的属性字段（如 `Message ID`、`Thread ID`、`Reply Suggestion` 等），以便后台 [server.py](src/api/server.py) 精确定位 Outlook 中的原始邮件进行答复。
+   > 确保 Notion Webhook 的 Payload JSON 正确绑定了邮件页面的属性字段（如 `Message ID`、`Thread ID`、`Reply Suggestion`、`To`、`CC More` 等），以便后台 [server.py](src/api/server.py) 精确定位 Outlook 中的原始邮件进行答复。
 
 ---
 

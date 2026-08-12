@@ -13,8 +13,9 @@ from src.notion.client import NotionClient, FileSizeLimitError
 from src.converter.html_converter import HTMLToNotionConverter
 from src.converter.eml_generator import EMLGenerator
 from src.converter.office_converter_win import convert_office_attachment, is_convertible
+from src.config import config
 
-BEIJING_TZ = timezone(timedelta(hours=8))
+
 
 class NotionSync:
     """Notion 同步器"""
@@ -161,8 +162,8 @@ class NotionSync:
 
     def _create_meeting_callout(self, invite: 'MeetingInvite') -> Dict[str, Any]:
         """创建会议邀请 Callout Block"""
-        start = invite.start_time.astimezone(BEIJING_TZ)
-        end = invite.end_time.astimezone(BEIJING_TZ)
+        start = invite.start_time.astimezone(config.tz)
+        end = invite.end_time.astimezone(config.tz)
         if invite.is_all_day:
             time_str = start.strftime("%Y-%m-%d") + " (全天)"
         else:
@@ -277,9 +278,9 @@ class NotionSync:
         """构建 Notion Page Properties"""
         email_date = email.date
         if email_date.tzinfo is None:
-            email_date = email_date.replace(tzinfo=BEIJING_TZ)
+            email_date = email_date.replace(tzinfo=config.tz)
         else:
-            email_date = email_date.astimezone(BEIJING_TZ)
+            email_date = email_date.astimezone(config.tz)
 
         properties = {
             "Subject": {"title": [{"text": {"content": email.subject[:2000]}}]},
@@ -447,7 +448,7 @@ class NotionSync:
         if not date_str: return None
         try:
             normalized = re.sub(r'\.\d+', '', date_str)
-            return datetime.fromisoformat(normalized).astimezone(BEIJING_TZ)
+            return datetime.fromisoformat(normalized).astimezone(config.tz)
         except Exception: return None
 
     async def _handle_thread_relations(self, page_id: str, email: Email):
@@ -457,7 +458,7 @@ class NotionSync:
                 thread_members = await self._find_all_thread_members_with_date(email.thread_id, exclude_message_id=email.message_id)
             
             if thread_members:
-                current_dt = (email.date.replace(tzinfo=BEIJING_TZ) if email.date.tzinfo is None else email.date.astimezone(BEIJING_TZ)) if email.date else None
+                current_dt = (email.date.replace(tzinfo=config.tz) if email.date.tzinfo is None else email.date.astimezone(config.tz)) if email.date else None
                 for member in thread_members: member['date_dt'] = self._parse_date_to_beijing(member.get('date', ''))
                 valid_members = [m for m in thread_members if m.get('date_dt')]
                 # 没有有效日期的成员放到末尾

@@ -35,6 +35,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         
         # ── 1. Host Validation ────────────────────────────────────────────────
         host_header = self.headers.get('Host', '')
+        logger.info(f"👉 Received incoming request from {client_ip}:{client_port} | Host: {host_header}")
         is_local = "localhost" in host_header or "127.0.0.1" in host_header
         
         # Check against the allowed host set by tunnel manager
@@ -71,7 +72,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # ── 3. Payload Validation ──────────────────────────────────────────────
         try:
             data = json.loads(body)
-            logger.debug(f"Raw Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
+            logger.info(f"📦 Raw Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
         except json.JSONDecodeError as e:
             logger.error(f"❌ Invalid JSON data: {e}")
             self.send_response(400)
@@ -82,9 +83,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         action_id = data.get("source", {}).get("action_id", "N/A")
         logger.info(f"📥 Received Webhook from {client_ip}:{client_port}. action_id: {action_id}")
         
-        # Database ID Validation
+        # Database ID Validation (accept both email sync DB and new mail DB)
         try:
             expected_db_id = config.email_database_id.replace("-", "").lower()
+            new_mail_db_id = config.new_mail_database_id.replace("-", "").lower() if config.new_mail_database_id else ""
             received_db_id = ""
             if "data" in data and "parent" in data["data"]:
                 received_db_id = data["data"]["parent"].get("database_id", "")
@@ -93,14 +95,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
             clean_received_id = received_db_id.replace("-", "").lower()
             
-            if clean_received_id != expected_db_id:
-                logger.error(f"⛔ Database ID mismatch! Expected: {expected_db_id}, Received: {clean_received_id}")
+            is_new_mail = False
+            if clean_received_id == expected_db_id:
+                logger.info(f"✅ Database ID validated (email sync DB): {clean_received_id}")
+            elif new_mail_db_id and clean_received_id == new_mail_db_id:
+                is_new_mail = True
+                logger.info(f"✅ Database ID validated (new mail DB): {clean_received_id}")
+            else:
+                logger.error(f"⛔ Database ID mismatch! Expected: {expected_db_id} or {new_mail_db_id}, Received: {clean_received_id}")
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Database mismatch")
                 return
-            logger.info(f"✅ Database ID validated: {clean_received_id}")
         except Exception as e:
+            is_new_mail = False
             logger.warning(f"⚠️ Database ID validation skipped due to error: {e}")
 
         properties = data.get("data", {}).get("properties", {})
@@ -110,23 +118,72 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # ── New Mail flow (from new_mail database) ─────────────────────────────
+        if is_new_mail:
+            page_id = data.get("data", {}).get("id", "")
+            # Subject may be named 'Subject' or 'Name' depending on database setup
+            subject_prop = properties.get("Subject") or properties.get("Name")
+            to_prop = properties.get("To")
+            cc_prop = properties.get("CC More") or properties.get("CC")
+            email_body_prop = properties.get("Email Body") or properties.get("HTMLBody")
+
+            subject = extract_property_text(subject_prop).strip()
+            to = extract_property_text(to_prop).strip()
+            cc = extract_property_text(cc_prop).strip()
+            email_body = extract_property_text(email_body_prop).strip() if email_body_prop else ""
+
+            invalid_fields = []
+            if not subject: invalid_fields.append("Subject")
+            if not to: invalid_fields.append("To")
+
+            if invalid_fields:
+                logger.error(f"[NewMail] Validation failed: Fields are empty {', '.join(invalid_fields)}")
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            logger.info(f"✅ [NewMail] Validation passed. Subject: {subject[:40]}, To: {to[:40]}, Email Body: {len(email_body)} chars")
+            
+            final_action = "new_mail"
+            if action_id == config.notion_action_new_mail_draft:
+                final_action = "new_mail_draft"
+                
+            payload = {
+                "action": final_action,
+                "action_id": action_id,
+                "subject": subject,
+                "to": to,
+                "cc_more": cc,
+                "email_body": email_body,
+                "page_id": page_id,
+            }
+            global_task_pool.add_task(TaskType.WEBHOOK_DRAFT, TaskPriority.HIGH, payload)
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b"OK: New mail task enqueued")
+            return
+
+        # ── Existing Reply/Forward/Draft flow ──────────────────────────────────
         message_id_prop = properties.get("Message ID")
         thread_id_prop = properties.get("Thread ID")
         reply_suggestion_prop = properties.get("Reply Suggestion")
         draft_action_prop = properties.get("Draft Action")
         from_prop = properties.get("From")
+        to_prop = properties.get("To")
         cc_more_prop = properties.get("CC More") or properties.get("CC")
 
         message_id = extract_property_text(message_id_prop).strip()
         thread_id = extract_property_text(thread_id_prop).strip()
         reply_suggestion = extract_property_text(reply_suggestion_prop).strip()
         reply_to = extract_property_text(from_prop).strip()
+        forward_to = extract_property_text(to_prop).strip()
         cc_more = extract_property_text(cc_more_prop).strip()
 
         invalid_fields = []
         if not message_id: invalid_fields.append("Message ID")
         if not thread_id: invalid_fields.append("Thread ID")
-        if not reply_suggestion: invalid_fields.append("Reply Suggestion")
 
         if invalid_fields:
             logger.error(f"Validation failed: Fields are empty {', '.join(invalid_fields)}")
@@ -138,7 +195,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         CREATE_DRAFT_ACTION_ID = config.notion_action_create_draft
         SEND_DRAFT_ACTION_ID = config.notion_action_reply_all
         REPLY_ACTION_ID = config.notion_action_reply
-        CC_MORE_ACTION_ID = config.notion_action_cc_more
+        FORWARD_ACTION_ID = config.notion_action_forward
         
         final_action = "save"
         prop_action = extract_property_text(draft_action_prop).strip().lower() if draft_action_prop else ""
@@ -149,20 +206,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
             final_action = "reply_all"
         elif action_id == REPLY_ACTION_ID:
             final_action = "reply"
-        elif action_id == CC_MORE_ACTION_ID:
-            final_action = "reply_all"
+        elif action_id == FORWARD_ACTION_ID:
+            final_action = "forward"
         else:
             if prop_action == "create draft":
                 final_action = "save"
-            elif prop_action in ["send draft", "reply all", "cc more"]:
+            elif prop_action in ["send draft", "reply all"]:
                 final_action = "reply_all"
             elif prop_action == "reply":
                 final_action = "reply"
+            elif prop_action == "forward":
+                final_action = "forward"
             else:
                 logger.error(f"❌ Unknown action '{prop_action}'. Cannot determine if Send or Create Draft. Aborting. action_id={action_id}")
                 self.send_response(400)
                 self.end_headers()
                 return
+
+        # Reply Suggestion is required for reply/reply_all, but optional for forward/save
+        if final_action in ("reply", "reply_all") and not reply_suggestion:
+            logger.error(f"Validation failed: Reply Suggestion is empty (required for {final_action})")
+            self.send_response(400)
+            self.end_headers()
+            return
 
         # ── 4. Enqueue Task (恢复优雅的任务池架构) ──────────────────────────────────
         logger.info(f"✅ Validation passed. Action: {final_action}, message_id: {message_id[:20]}...")
@@ -173,6 +239,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "action": final_action,
             "action_id": action_id,
             "reply_to": reply_to,
+            "forward_to": forward_to,
             "cc_more": cc_more,
         }
         
@@ -183,6 +250,76 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
         self.end_headers()
         self.wfile.write(b"OK: Task enqueued")
+
+    def _fetch_page_body_as_html(self, page_id: str) -> str:
+        """Fetch Notion page blocks and convert to HTML for email body."""
+        import requests
+        
+        url = f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100"
+        headers = {
+            "Authorization": f"Bearer {config.notion_token}",
+            "Notion-Version": "2022-06-28",
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        blocks = resp.json().get("results", [])
+        
+        html_parts = []
+        for block in blocks:
+            block_type = block.get("type", "")
+            block_data = block.get(block_type, {})
+            
+            # Extract rich_text from block
+            rich_texts = block_data.get("rich_text", [])
+            text = "".join([rt.get("plain_text", "") for rt in rich_texts])
+            
+            if not text and block_type not in ("divider", "blank"):
+                continue
+                
+            if block_type == "paragraph":
+                html_parts.append(f"<p>{self._rich_text_to_html(rich_texts)}</p>")
+            elif block_type in ("heading_1", "heading_2", "heading_3"):
+                level = block_type[-1]
+                html_parts.append(f"<h{level}>{self._rich_text_to_html(rich_texts)}</h{level}>")
+            elif block_type == "bulleted_list_item":
+                html_parts.append(f"<li>{self._rich_text_to_html(rich_texts)}</li>")
+            elif block_type == "numbered_list_item":
+                html_parts.append(f"<li>{self._rich_text_to_html(rich_texts)}</li>")
+            elif block_type == "divider":
+                html_parts.append("<hr>")
+            elif block_type == "code":
+                html_parts.append(f"<pre><code>{text}</code></pre>")
+            else:
+                # Fallback for other block types
+                if text:
+                    html_parts.append(f"<p>{self._rich_text_to_html(rich_texts)}</p>")
+        
+        return "\n".join(html_parts)
+    
+    def _rich_text_to_html(self, rich_texts: list) -> str:
+        """Convert Notion rich_text array to HTML with formatting."""
+        parts = []
+        for rt in rich_texts:
+            text = rt.get("plain_text", "")
+            annotations = rt.get("annotations", {})
+            href = rt.get("href")
+            
+            # Apply formatting
+            if annotations.get("bold"):
+                text = f"<b>{text}</b>"
+            if annotations.get("italic"):
+                text = f"<i>{text}</i>"
+            if annotations.get("underline"):
+                text = f"<u>{text}</u>"
+            if annotations.get("strikethrough"):
+                text = f"<s>{text}</s>"
+            if annotations.get("code"):
+                text = f"<code>{text}</code>"
+            if href:
+                text = f'<a href="{href}">{text}</a>'
+            
+            parts.append(text)
+        return "".join(parts)
 
     def log_message(self, format, *args):
         # Override to suppress default HTTP logging

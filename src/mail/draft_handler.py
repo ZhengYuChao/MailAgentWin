@@ -116,12 +116,20 @@ def _append_cc_without_duplicates(mail_item, cc_more: str):
 def execute_draft_action(payload: dict):
     """
     通过 Outlook COM 执行发送或保存草稿。
-    payload 包含: message_id, thread_id, reply_suggestion, action (send/save), action_id
+    payload 包含: message_id, thread_id, reply_suggestion, action (send/save/new_mail), action_id
     """
+    final_action = payload.get("action")
+    action_id = payload.get("action_id")
+    
+    # ── New Mail: create a brand new email (no existing thread) ──────────
+    if final_action in ("new_mail", "new_mail_draft"):
+        draft_only = (final_action == "new_mail_draft")
+        _execute_new_mail(payload, draft_only=draft_only)
+        return
+    
     message_id = payload.get("message_id")
     thread_id = payload.get("thread_id")
     reply_suggestion = payload.get("reply_suggestion")
-    final_action = payload.get("action")
     action_id = payload.get("action_id")
     
     pythoncom.CoInitialize()
@@ -228,15 +236,43 @@ def execute_draft_action(payload: dict):
             logger.warning(f"Failed to re-fetch item by EntryID: {e}")
 
         reply_to = payload.get("reply_to")
+        forward_to = payload.get("forward_to")
         cc_more = payload.get("cc_more")
         reply = None
         
-        if final_action == "reply":
+        if final_action == "forward":
+            try:
+                logger.info("Calling target_item.Forward()...")
+                reply = target_item.Forward()
+                if forward_to:
+                    import re
+                    for t in re.split(r'[;,]', forward_to):
+                        t = t.strip()
+                        if t:
+                            try:
+                                recip = reply.Recipients.Add(t)
+                                recip.Type = 1  # olTo
+                                recip.Resolve()
+                            except Exception as e:
+                                logger.warning(f"Error adding Forward To recipient {t}: {e}")
+                    logger.info(f"Setting Forward To field with: {forward_to}")
+            except Exception as e:
+                logger.warning(f"Forward() failed with exception: {e}")
+        elif final_action == "reply":
             try:
                 logger.info("Calling target_item.Reply()...")
                 reply = target_item.Reply()
                 if reply_to:
-                    reply.To = reply_to
+                    import re
+                    for t in re.split(r'[;,]', reply_to):
+                        t = t.strip()
+                        if t:
+                            try:
+                                recip = reply.Recipients.Add(t)
+                                recip.Type = 1  # olTo
+                                recip.Resolve()
+                            except Exception as e:
+                                logger.warning(f"Error adding Reply To recipient {t}: {e}")
                     logger.info(f"Overriding To field with: {reply_to}")
             except Exception as e:
                 logger.warning(f"Reply() failed with exception: {e}")
@@ -260,10 +296,16 @@ def execute_draft_action(payload: dict):
                 reply = app.CreateItem(0)
                 import re
                 orig_subject = target_item.Subject
-                clean_subject = re.sub(r'^([Rr][Ee]:\s*)+', '', orig_subject).strip()
-                reply.Subject = f"RE: {clean_subject}"
                 
-                reply.To = reply_to if reply_to else target_item.SenderEmailAddress
+                if final_action == "forward":
+                    clean_subject = re.sub(r'^([Ff][Ww]:\s*)+', '', orig_subject).strip()
+                    reply.Subject = f"FW: {clean_subject}"
+                    reply.To = forward_to if forward_to else ""
+                else:
+                    clean_subject = re.sub(r'^([Rr][Ee]:\s*)+', '', orig_subject).strip()
+                    reply.Subject = f"RE: {clean_subject}"
+                    reply.To = reply_to if reply_to else target_item.SenderEmailAddress
+                    
                 reply.Body = reply_suggestion + "\n\n--- Original Message ---\n" + getattr(target_item, "Body", "")
                 logger.info("Created new MailItem as fallback.")
             except Exception as e:
@@ -336,3 +378,102 @@ def execute_draft_action(payload: dict):
     finally:
         pythoncom.CoUninitialize()
 
+
+def _execute_new_mail(payload: dict, draft_only: bool = False):
+    """
+    创建（并可选发送）一封全新的邮件（非回复/转发）。
+    payload 包含: subject, to, cc_more, email_body, action_id
+    """
+    subject = payload.get("subject", "")
+    to = payload.get("to", "")
+    cc_more = payload.get("cc_more", "")
+    email_body = payload.get("email_body", "")
+    action_id = payload.get("action_id", "")
+
+    action_label = "Creating Draft" if draft_only else "Creating and Sending"
+    logger.info(f"📧 [NewMail] {action_label} for new email: Subject='{subject[:40]}', To='{to[:40]}'")
+
+    pythoncom.CoInitialize()
+    try:
+        try:
+            import win32com.client.gencache
+            app = win32com.client.gencache.EnsureDispatch("Outlook.Application")
+        except Exception:
+            app = win32com.client.Dispatch("Outlook.Application")
+
+        # Create a new mail item (olMailItem = 0)
+        mail = app.CreateItem(0)
+        mail.Subject = subject
+        
+        # Safely add To recipients so they resolve correctly in Outlook
+        import re
+        if to:
+            for t in re.split(r'[;,]', to):
+                t = t.strip()
+                if t:
+                    try:
+                        recip = mail.Recipients.Add(t)
+                        recip.Type = 1  # olTo
+                        recip.Resolve()
+                    except Exception as e:
+                        logger.warning(f"Error adding To recipient {t}: {e}")
+        
+        # Set plain text body
+        if email_body:
+            mail.Body = email_body
+            logger.info(f"[NewMail] Set Body ({len(email_body)} chars)")
+        
+        # Add CC recipients (with dedup)
+        if cc_more:
+            _append_cc_without_duplicates(mail, cc_more)
+
+        # Send/Save the email (with configurable timeout, same pattern as existing flow)
+        publish_timeout = config.outlook_publish_timeout_sec
+        hider_duration = max(15.0, float(publish_timeout)) if publish_timeout > 0 else 15.0
+        _start_progress_hider(hider_duration)
+
+        stream = pythoncom.CoMarshalInterThreadInterfaceInStream(
+            pythoncom.IID_IDispatch,
+            mail._oleobj_
+        )
+
+        publish_result = {"success": False, "error": None}
+
+        def _do_publish():
+            pythoncom.CoInitialize()
+            try:
+                unmarshaled_mail = win32com.client.Dispatch(
+                    pythoncom.CoGetInterfaceAndReleaseStream(stream, pythoncom.IID_IDispatch)
+                )
+                if draft_only:
+                    unmarshaled_mail.Save()
+                else:
+                    unmarshaled_mail.Send()
+                publish_result["success"] = True
+            except Exception as e:
+                publish_result["error"] = e
+            finally:
+                pythoncom.CoUninitialize()
+
+        publish_thread = threading.Thread(target=_do_publish, daemon=True, name="OutlookNewMailPublish")
+        publish_thread.start()
+
+        effective_timeout = publish_timeout if publish_timeout > 0 else None
+        publish_thread.join(timeout=effective_timeout)
+
+        if publish_thread.is_alive():
+            op_str = "Save()" if draft_only else "Send()"
+            logger.warning(
+                f"⚠️ [NewMail] Outlook {op_str} timed out after {publish_timeout}s. "
+                f"Abandoning wait (action_id: {action_id})."
+            )
+        elif publish_result["error"]:
+            raise publish_result["error"]
+        else:
+            success_msg = "saved to Drafts" if draft_only else "sent successfully"
+            logger.info(f"✅ [NewMail] Email {success_msg}! Subject='{subject[:40]}' (action_id: {action_id})")
+
+    except Exception as e:
+        logger.error(f"❌ [NewMail] Failed to process new email: {e}")
+    finally:
+        pythoncom.CoUninitialize()

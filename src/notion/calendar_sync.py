@@ -22,10 +22,8 @@ import httpcore
 from src.models import CalendarEvent, EventStatus
 from src.notion.client import NotionClient
 from src.config import config
-
-BEIJING_TZ = timezone(timedelta(hours=8))
-
-
+import logging
+logger = logging.getLogger(__name__)
 class NotionCalendarSync:
     """Notion 日历库同步器"""
 
@@ -224,9 +222,9 @@ class NotionCalendarSync:
         start = event.start_time
         end = event.end_time
         if start.tzinfo is None:
-            start = start.replace(tzinfo=BEIJING_TZ)
+            start = start.replace(tzinfo=config.tz)
         if end and end.tzinfo is None:
-            end = end.replace(tzinfo=BEIJING_TZ)
+            end = end.replace(tzinfo=config.tz)
 
         # 时间属性
         time_prop: Dict[str, Any] = {"start": start.isoformat()}
@@ -251,7 +249,7 @@ class NotionCalendarSync:
         # 会议类型推断
         meeting_type = self._infer_meeting_type(event)
 
-        now_iso = datetime.now(BEIJING_TZ).isoformat()
+        now_iso = datetime.now(config.tz).isoformat()
 
         properties: Dict[str, Any] = {
             # 1. Title (title)
@@ -262,8 +260,7 @@ class NotionCalendarSync:
             "Status": {"select": {"name": status_name}},
             # 6. Calendar (select)
             "Calendar": {"select": {"name": event.calendar_name or "Outlook"}},
-            # 8. Last Modified (date)
-            "Last Modified": {"date": {"start": (event.last_modified or datetime.now(BEIJING_TZ)).isoformat()}},
+            "Last Modified": {"date": {"start": (event.last_modified or datetime.now(config.tz)).isoformat()}},
             # 9. Last Synced (date)
             "Last Synced": {"date": {"start": now_iso}},
             # 10. Is All Day (checkbox)

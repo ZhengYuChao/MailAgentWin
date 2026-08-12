@@ -221,6 +221,26 @@ class AIController:
                 logger.error(f"Error in debounce loop: {e}")
                 await asyncio.sleep(5)
 
+
+    async def _click_new_chat(self):
+        """点击左下角的 New Chat 按钮启动独立对话"""
+        try:
+            if not self.page:
+                return False
+            logger.info("🆕 Clicking 'New chat' button to start an isolated session...")
+            new_chat_btn = self.page.locator("div[role='button']:has-text('New chat'), button:has-text('New chat'), [aria-label='New chat']").first
+            if await new_chat_btn.is_visible(timeout=5000):
+                await new_chat_btn.click(delay=100)
+                import asyncio, random
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+                return True
+            else:
+                logger.warning("⚠️ 'New chat' button not found, continuing in current view.")
+                return False
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to click 'New chat': {e}")
+            return False
+
     async def _do_trigger_ai(self, action: str = None, force_new_chat: bool = False):
         """实际在持久化的浏览器中输入 Prompt"""
         try:
@@ -245,6 +265,7 @@ class AIController:
             prompt_file = os.path.join(script_dir, "prompt.txt")
             
             if action == "scheduled_daily_sync":
+                await self._click_new_chat()
                 schedule_file = os.path.join(script_dir, "prompt_schedule.txt")
                 if os.path.exists(schedule_file):
                     prompt_file = schedule_file

@@ -36,12 +36,38 @@ MailAgent 是一个运行在 Windows 平台上的自动化办公助手，能够�
         *   `DEBOUNCE_FORCE_SEC`（默认 1800 秒）：强制触发间隔，即便一直有邮件源源不断同步，达此间隔也会强推触发一次 AI 交互。
         *   `NOTION_AI_BATCH_SIZE`（默认 5 封）：当待总结邮件批次满 5 封时，无视防抖，直接触发 AI。
     *   **浏览器会话自动回收**：通过 `NOTION_AI_MAX_CHATS_PER_SESSION` (默认 10 次) 限制单次浏览器会话的最大 prompt 提交数，超出后自动回收并重启 Chromium 进程，彻底杜绝内存泄露与会话长度导致的幻觉。
-    *   **早报定时汇总**：内置每日早上 `07:00` 定时任务 ([daily.py](src/scheduler/daily.py))，调用专用的 `prompt_schedule.txt` 模板触发早报总结。
+    *   **早报定时汇总**：内置每日早上 `07:00` 定时任务 ([daily.py](src/scheduler/daily.py))，调用专用的 `prompt_daily.txt` (支持多个带有数字后缀的文件顺序执行) 模板触发早报总结。
 *   **Notion 动作反向 Webhook 回调**：
     *   本地拉起一个轻量级 Web 监听服务 ([server.py](src/api/server.py))，由内置的 **Ngrok** 或 **Cloudflare Quick Tunnel** 反向代理至公网，安全机制只接受域名相同的 Host 以及校验 database ID。
-    *   当在 Notion 页面上点击自定义按钮（如新建草稿、全部回复、单人回复）时，会调用 Webhook。
-    *   [draft_handler.py](src/mail/draft_handler.py) 在独立背景线程中运行 COM 操作防止主线程卡死，解析动作并在本地 Outlook 执行 `ReplyAll()` 或 `Reply()` 自动填充 AI 建议的正文，实现**静默保存草稿**或**直接发送邮件**。
+    *   支持以下五种 Webhook 动作，通过 Notion 页面上的自定义按钮触发：
+        *   **Create Draft**：将 AI 建议内容存入本地 Outlook 草稿箱（`ReplyAll()` + `Save()`）。
+        *   **Reply All**：直接向所有收件人发送回复（`ReplyAll()` + `Send()`）。
+        *   **Reply**：仅回复发件人（`Reply()` + `Send()`）。
+        *   **Forward**：将邮件转发至指定收件人（`Forward()` + `Send()`），需配置 `NOTION_ACTION_FORWARD`。
+        *   **New Mail**：完全从零创建并发送新邮件（不基于已有会话），从 `NEW_MAIL_DATABASE_ID` 指定的独立数据库读取收件人、主题和正文，支持 `new_mail`（直接发送）和 `new_mail_draft`（保存草稿）两种子动作。
+    *   [draft_handler.py](src/mail/draft_handler.py) 在独立背景线程中运行 COM 操作防止主线程卡死，所有 Reply/Forward/New Mail 动作均通过 **COM Marshal 跨线程封送**技术确保线程安全，并支持 `OUTLOOK_PUBLISH_TIMEOUT_SEC` 超时保护，超时后自动放弃等待但不影响其他流程。
 *   **飞书通知**：收件箱收到重要邮件同步成功后，自动推送富文本卡片通知至飞书，附带 AI 判定优先级及摘要。
+
+---
+
+## 🖼️ 界面与效果展示
+
+### 1. 邮件同步与 AI 智能处理效果
+邮件自动同步至 Notion 数据库后，Notion AI 会自动补充 **AI Summary**、**Key Points**、**Category**、**Priority** 及 **Reply Suggestion**，并在页面顶部集成反向控制按钮（`Create Draft`、`Reply All`、`Reply`、`Forward` 等）：
+
+![Notion 邮件同步与 AI 处理效果图](./img/email-example.png)
+
+### 2. 全新建邮件与草稿生成效果
+通过独立的 Notion 数据库新建邮件时，可配置 `Subject` / `Name`、`To`（收件人）、`CC More`（抄送人）、`Email Body` 等字段，并通过页面按钮触发发送或存为 Outlook 草稿：
+
+![Notion 新建邮件/草稿效果图](./img/email-draft-example.png)
+
+### 3. Notion 反向操作按钮与自动化配置
+在 Notion 页面属性中添加的控制按钮及 Notion 侧 Automation Webhook 触发逻辑设置：
+
+| 页面反向操作按钮 | Notion Webhook 自动化配置 |
+| :---: | :---: |
+| ![Notion 页面按钮](./img/button.png) | ![Automation 配置](./img/automation.png) |
 
 ---
 
@@ -195,24 +221,60 @@ python scripts/preflight_check.py
 | `NOTION_AI_WAIT_TIMEOUT` | `int` | `600` | 等待 Notion AI 当前生成完成的最大超时时间（秒） |
 | `AI_MODEL_EMAIL_SYNC` | `str` | `Sonnet 4.6` | 日常邮件同步操作使用的模型 |
 | `AI_MODEL_DAILY_SUMMARY` | `str` | `GPT-5.6 Sol` | 每日定时深度总结使用的模型 |
-| `NOTION_ACTION_CREATE_DRAFT` | `str` | `35d15375-830d-806b-b799-005aa8637e7e` | Notion 页面上 `"Create Draft"` 按钮对应的 Action ID |
-| `NOTION_ACTION_REPLY_ALL` | `str` | `32c15375-830d-8065-8fbf-005a31068639` | Notion 页面上 `"Reply All"` 按钮对应的 Action ID |
-| `NOTION_ACTION_REPLY` | `str` | `39915375-830d-8079-8c98-005af593110f` | Notion 页面上 `"Reply"` 按钮对应的 Action ID |
+| `NOTION_ACTION_CREATE_DRAFT` | `str` | `35d15375-...` | Notion 页面上 `"Create Draft"` 按钮对应的 Action ID |
+| `NOTION_ACTION_REPLY_ALL` | `str` | `32c15375-...` | Notion 页面上 `"Reply All"` 按钮对应的 Action ID |
+| `NOTION_ACTION_REPLY` | `str` | `39915375-...` | Notion 页面上 `"Reply"` 按钮对应的 Action ID |
 | `NOTION_ACTION_CC_MORE` | `str` | `""` | Notion 页面上 `"CC More"` 按钮对应的 Action ID |
+| `NOTION_ACTION_FORWARD` | `str` | `""` | Notion 页面上 `"Forward"` 转发按钮对应的 Action ID |
+| `NOTION_ACTION_NEW_MAIL` | `str` | `""` | Notion 页面上 `"New Mail"` 新建并发送邮件按钮对应的 Action ID |
+| `NOTION_ACTION_NEW_MAIL_DRAFT` | `str` | `""` | Notion 页面上 `"New Mail (Draft)"` 新建草稿按钮对应的 Action ID |
+| `NEW_MAIL_DATABASE_ID` | `str` | `""` | 新建邮件专用的 Notion 数据库 ID（需包含 Subject、To、CC More、Email Body 等字段） |
+| `OUTLOOK_PUBLISH_TIMEOUT_SEC` | `int` | `600` | Outlook COM Send/Save 操作的最大等待超时时间（秒），超时后放弃等待但操作可能在后台继续完成。设为 0 表示不限时 |
 | `FEISHU_NOTIFY_ENABLED` | `bool` | `False` | 是否启用飞书通知卡片 |
 | `FEISHU_APP_ID`/`FEISHU_APP_SECRET` | `str` | `""` | 飞书开放平台应用的凭证（用以获取 Token 进行高级发送） |
 | `FEISHU_WEBHOOK_URL` | `str` | `""` | 飞书自定义群机器人的 Webhook 地址 |
+| `ALERT_ENABLED` | `bool` | `False` | 是否启用飞书告警机器人（独立于通知，专门推送 critical/error/warning 级别告警） |
+| `ALERT_FEISHU_WEBHOOK_URL` | `str` | `""` | 飞书告警机器人的 Webhook 地址 |
+| `ALERT_LEVELS` | `str` | `critical,error,warning` | 告警触发级别（逗号分隔） |
+| `ALERT_COOLDOWN` | `int` | `300` | 同类告警的冷却时间（秒），防止告警风暴 |
+| `KEEP_ALIVE_ENABLED` | `bool` | `False` | 是否启用防锁屏保活（避免 Windows 息屏导致 Playwright 失联） |
+| `LLM_AGENT_ENABLED` | `bool` | `False` | 是否启用本地 LLM Agent 直接处理邮件 AI 字段（取代 Notion AI 自动化方案） |
+| `LLM_API_BASE` | `str` | `""` | Anthropic Messages 兼容网关的 Base URL |
+| `LLM_API_KEY` | `str` | `""` | LLM 网关 API Key |
+| `LLM_MODEL` | `str` | `claude-sonnet-4-6` | LLM Agent 调用的模型名 |
+| `LLM_INBOX_PROMPT_PATH` | `str` | `prompts/email_inbox.md` | 收件箱邮件处理 Prompt 模板路径 |
+| `LLM_SENT_PROMPT_PATH` | `str` | `prompts/email_sent.md` | 发件箱邮件处理 Prompt 模板路径 |
+| `LLM_CONTEXT_PAGE_ID` | `str` | `""` | Email Agent Context Notion 页面 ID（LLM 处理时加载的动态上下文） |
+| `LLM_DAILY_DIGEST_DATABASE_ID` | `str` | `""` | Daily Email Digests 汇总库 ID（LLM Agent 每日摘要写入目标） |
+| `PROJECT_PROGRESS_SYNC_ENABLED` | `bool` | `False` | 是否启用项目周报自动同步模块 |
+| `PROJECT_PROGRESS_SENDER` | `str` | `""` | 触发项目周报同步的发件人邮箱（子串匹配） |
+| `PROJECT_PROGRESS_SUBJECT_PATTERN` | `str` | `""` | 触发项目周报同步的邮件标题正则 |
+| `PROJECT_PROGRESS_DATABASE_ID` | `str` | `""` | Notion 项目进度库 ID |
 
-### 4. Notion Webhook 与 CC More 按钮配置
-为了在 Notion 中触发直接发送邮件（例如 Reply、CC More 等），您需要在 Notion 的 Email 数据库中：
-1. **添加目标字段**：
-   - 针对草稿回复，系统读取 `Reply Suggestion` 字段。
-   - 针对 **CC More**（增加抄送人直接发送），您必须在数据库中新建一个字段，名称精确命名为 **`CC`** 或 **`CC More`**（类型可以是 Text 或 Email）。在点击 CC More 按钮前，需先在页面中填入抄送人邮箱（多邮箱可通过分号分隔）。
+### 4. Notion Webhook 按钮配置
+为了在 Notion 中触发本地 Outlook 动作（草稿、回复、转发、新建邮件等），您需要在 Notion 数据库中进行以下配置：
+
+#### 4.1 邮件同步数据库（回复/转发类按钮）
+在已有的 Email 同步数据库（`EMAIL_DATABASE_ID`）中：
+1. **确认所需字段存在**：
+   - `Reply Suggestion`（Text）：AI 建议的回复正文，Reply/Reply All 时必须有内容。
+   - `CC More` 或 `CC`（Text/Email）：额外抄送人邮箱，多个用分号分隔，供 CC More 动作使用。
+   - `To`（Text/Email）：Forward 动作的转发目标邮箱。
+   - `Draft Action`（Text，可选）：可选字段，值为 `create draft`/`reply all`/`reply`/`forward`，当 action_id 匹配不上时作为 fallback 判断动作类型。
 2. **配置 Button Automation**：
-   - 在 Notion 数据库中新增一个 Button 属性（或直接使用 Automation）。
-   - 选择动作为 **Send Webhook**。
-   - 将内网穿透输出的公网 URL（例如 `https://xxxx.ngrok-free.app`）填入。
-   - 提取该 Automation 的 Action ID（可以从运行后台日志中获得），并配置到 `.env` 文件对应的 `NOTION_ACTION_xxx` 中。
+   - 在数据库中新增 Button 属性，选择动作为 **Send Webhook**。
+   - 将内网穿透的公网 URL 填入（例如 `https://xxxx.ngrok-free.app`）。
+   - 从运行日志中提取对应的 Action ID，分别填入 `.env` 的 `NOTION_ACTION_CREATE_DRAFT`、`NOTION_ACTION_REPLY_ALL`、`NOTION_ACTION_REPLY`、`NOTION_ACTION_FORWARD`。
+
+#### 4.2 新建邮件数据库（New Mail 按钮）
+如需使用**全新建邮件**功能（非回复已有线程），需额外创建一个独立的 Notion 数据库：
+1. **创建新数据库**并添加以下字段：
+   - `Subject` 或 `Name`（Title 类型）：邮件主题。
+   - `To`（Text/Email 类型）：收件人，多个用分号分隔。
+   - `CC More` 或 `CC`（Text/Email 类型，可选）：抄送人。
+   - `Email Body` 或 `HTMLBody`（Text 类型，可选）：邮件正文。
+2. 将该数据库 ID 填入 `.env` 的 `NEW_MAIL_DATABASE_ID`。
+3. 在该数据库中配置 Webhook Button，将对应的 Action ID 填入 `NOTION_ACTION_NEW_MAIL`（直接发送）或 `NOTION_ACTION_NEW_MAIL_DRAFT`（保存草稿）。
 
 ---
 
