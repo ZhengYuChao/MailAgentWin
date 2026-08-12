@@ -23,7 +23,7 @@ data/*.db-journal
 # Logs and screenshots
 logs/
 *.log
-*.png
+logs/*.png
 
 # Webhook payload logs and other temporary scratch files
 scratch/webhook_history.jsonl
