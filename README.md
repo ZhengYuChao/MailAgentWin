@@ -260,11 +260,11 @@ python scripts/preflight_check.py
    - `Reply Suggestion`（Text）：AI 建议的回复正文，Reply/Reply All 时必须有内容。
    - `CC More` 或 `CC`（Text/Email）：额外抄送人邮箱，多个用分号分隔，供 CC More 动作使用。
    - `To`（Text/Email）：Forward 动作的转发目标邮箱。
-   - `Draft Action`（Text，可选）：可选字段，值为 `create draft`/`reply all`/`reply`/`forward`，当 action_id 匹配不上时作为 fallback 判断动作类型。
+   - `Draft Action`（Text，可选）：可选字段，当没有使用带参数的 URL 时，作为 fallback 判断动作类型。
 2. **配置 Button Automation**：
-   - 在数据库中新增 Button 属性，选择动作为 **Send Webhook**。
-   - 将内网穿透的公网 URL 填入（例如 `https://xxxx.ngrok-free.app`）。
-   - 从运行日志中提取对应的 Action ID，分别填入 `.env` 的 `NOTION_ACTION_CREATE_DRAFT`、`NOTION_ACTION_REPLY_ALL`、`NOTION_ACTION_REPLY`、`NOTION_ACTION_FORWARD`。
+   - 在数据库中新增 Button 属性，选择动作为 **Send Webhook**（或者通过 Notion Automation 发送 HTTP 请求）。
+   - 将内网穿透的公网 URL 填入，并在末尾附加对应的动作参数（例如 `https://example.ngrok-free.app/?action=reply`）。
+   - 当前支持的 URL 动作参数有：`?action=create_draft`、`?action=reply_all`、`?action=reply`、`?action=forward`。无需再在 `.env` 中维护繁琐的 Action ID。
 
 #### 4.2 新建邮件数据库（New Mail 按钮）
 如需使用**全新建邮件**功能（非回复已有线程），需额外创建一个独立的 Notion 数据库：
@@ -274,7 +274,7 @@ python scripts/preflight_check.py
    - `CC More` 或 `CC`（Text/Email 类型，可选）：抄送人。
    - `Email Body` 或 `HTMLBody`（Text 类型，可选）：邮件正文。
 2. 将该数据库 ID 填入 `.env` 的 `NEW_MAIL_DATABASE_ID`。
-3. 在该数据库中配置 Webhook Button，将对应的 Action ID 填入 `NOTION_ACTION_NEW_MAIL`（直接发送）或 `NOTION_ACTION_NEW_MAIL_DRAFT`（保存草稿）。
+3. 在该数据库中配置 Webhook Button，将请求 URL 附加上对应的参数，例如 `?action=new_mail`（直接发送）或 `?action=new_mail_draft`（保存草稿）。
 
 ---
 

@@ -245,31 +245,9 @@ class Config(BaseSettings):
         description="内网穿透服务商: ngrok / cloudflare, 为空则不启用"
     )
     
-    # Notion Automation Webhook 配置
-    notion_action_create_draft: str = Field(
-        default="35d15375-830d-806b-b799-005aa8637e7e", env="NOTION_ACTION_CREATE_DRAFT",
-        description="Notion 'Create Draft' 按钮的 action_id"
-    )
-    notion_action_reply_all: str = Field(
-        default="32c15375-830d-8065-8fbf-005a31068639", env="NOTION_ACTION_REPLY_ALL",
-        description="Notion 'Reply All / Send Draft' 按钮的 action_id"
-    )
-    notion_action_reply: str = Field(
-        default="39915375-830d-8079-8c98-005af593110f", env="NOTION_ACTION_REPLY",
-        description="单人回复(不带其他收件人)按钮对应的 Notion 内部 Button Action ID"
-    )
-    notion_action_cc_more: str = Field(
-        default="", env="NOTION_ACTION_CC_MORE",
-        description="新增抄送人按钮对应的 Notion 内部 Button Action ID"
-    )
-    notion_action_forward: str = Field(
-        default="", env="NOTION_ACTION_FORWARD"
-    )
+    # Notion Automation Webhook 配置 (URL based actions now)
     notion_action_new_mail: str = Field(
         default="", env="NOTION_ACTION_NEW_MAIL"
-    )
-    notion_action_new_mail_draft: str = Field(
-        default="", env="NOTION_ACTION_NEW_MAIL_DRAFT"
     )
     new_mail_database_id: str = Field(
         default="", env="NEW_MAIL_DATABASE_ID"

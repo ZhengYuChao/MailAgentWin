@@ -1,6 +1,7 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 from loguru import logger
 from src.config import config
 from src.scheduler.task_pool import global_task_pool
@@ -32,6 +33,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def handle_request(self):
         client_ip, client_port = self.client_address
+        
+        parsed_url = urlparse(self.path)
+        query_params = parse_qs(parsed_url.query)
+        url_action = query_params.get("action", [""])[0].lower()
         
         # ── 1. Host Validation ────────────────────────────────────────────────
         host_header = self.headers.get('Host', '')
@@ -145,7 +150,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info(f"✅ [NewMail] Validation passed. Subject: {subject[:40]}, To: {to[:40]}, Email Body: {len(email_body)} chars")
             
             final_action = "new_mail"
-            if action_id == config.notion_action_new_mail_draft:
+            if url_action in ["new_mail_draft", "draft", "save"]:
                 final_action = "new_mail_draft"
                 
             payload = {
@@ -192,24 +197,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
             
         # Determine Action
-        CREATE_DRAFT_ACTION_ID = config.notion_action_create_draft
-        SEND_DRAFT_ACTION_ID = config.notion_action_reply_all
-        REPLY_ACTION_ID = config.notion_action_reply
-        FORWARD_ACTION_ID = config.notion_action_forward
-        
         final_action = "save"
         prop_action = extract_property_text(draft_action_prop).strip().lower() if draft_action_prop else ""
         
-        if action_id == CREATE_DRAFT_ACTION_ID:
-            final_action = "save"
-        elif action_id == SEND_DRAFT_ACTION_ID:
-            final_action = "reply_all"
-        elif action_id == REPLY_ACTION_ID:
-            final_action = "reply"
-        elif action_id == FORWARD_ACTION_ID:
-            final_action = "forward"
+        if url_action:
+            if url_action in ["reply", "reply_all", "forward", "save"]:
+                final_action = url_action
+            elif url_action in ["draft", "create_draft"]:
+                final_action = "save"
+            else:
+                logger.error(f"❌ Unknown action in URL '{url_action}'. Aborting.")
+                self.send_response(400)
+                self.end_headers()
+                return
         else:
-            if prop_action == "create draft":
+            if prop_action == "create draft" or prop_action == "save":
                 final_action = "save"
             elif prop_action in ["send draft", "reply all"]:
                 final_action = "reply_all"
@@ -218,7 +220,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             elif prop_action == "forward":
                 final_action = "forward"
             else:
-                logger.error(f"❌ Unknown action '{prop_action}'. Cannot determine if Send or Create Draft. Aborting. action_id={action_id}")
+                logger.error(f"❌ Unknown action in Draft Action property '{prop_action}' and no URL action provided. Aborting.")
                 self.send_response(400)
                 self.end_headers()
                 return

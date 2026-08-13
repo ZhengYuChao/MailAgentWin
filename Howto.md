@@ -47,12 +47,7 @@
 ### 3. 反向 Webhook 与穿透配置 (核心改动)
 如果你需要通过 Notion 的按钮直接让本地 Outlook 自动草稿/发信，请配置以下项：
 *   `REVERSE_PROXY`: 填入 `ngrok` 或 `cloudflare`（视本地安装的客户端而定）。留空则关闭反向 Webhook 服务。
-*   `NOTION_ACTION_CREATE_DRAFT`: 填入 Notion 数据库中 `"Create Draft"` 按钮对应的 Action ID。
-*   `NOTION_ACTION_REPLY_ALL`: 填入 Notion 数据库中 `"Reply All"` 按钮对应的 Action ID。
-*   `NOTION_ACTION_REPLY`: 填入 Notion 数据库中 `"Reply"` 按钮对应的 Action ID。
-*   `NOTION_ACTION_FORWARD`: （可选）填入 Notion 数据库中 `"Forward"` 转发按钮对应的 Action ID。
-*   `NOTION_ACTION_NEW_MAIL`: （可选）新建并发送邮件的按钮 Action ID（需配合 `NEW_MAIL_DATABASE_ID` 使用）。
-*   `NOTION_ACTION_NEW_MAIL_DRAFT`: （可选）新建草稿的按钮 Action ID。
+*   **Notion Webhook URL**: 不再需要繁琐的 Action ID。请直接在你的 Notion 按钮/自动化中填写你生成的 Webhook URL，并加上 `?action=xxx` 参数来指定动作（如 `?action=reply`）。支持的具体动作见下文。
 *   `NEW_MAIL_DATABASE_ID`: （可选）新建邮件专用的 Notion 数据库 ID，需包含 `Subject`/`Name`、`To`、`CC More`、`Email Body` 等字段。
 
 ### 4. 可选功能配置
@@ -179,17 +174,15 @@ python main.py
 
 3. 配置按钮触发时的动作为：**“发送 HTTP 请求 (Send HTTP Request)”**。
    *   **请求类型**：`POST`
-   *   **请求 URL**：`https://xxxx.ngrok-free.app`（直接填入你的公网域名即可）
-4. 当前支持以下五种动作（通过 Action ID 区分，也可由 `Draft Action` 字段 fallback 判断）：
-   | 按钮名 | Action | `.env` 配置项 | 说明 |
+   *   **请求 URL**：填写你的内网穿透公网域名，并在末尾加上 `?action=xxx`（例如 `https://example.ngrok-free.app/?action=reply`）。
+4. 当前支持以下几种动作，通过 URL 的 `action` 参数直接区分（如果你没有带参数，代码也会尝试读取页面上的 `Draft Action` 字段进行判断）：
+   | 按钮名 | Action 参数 | Webhook URL 示例 | 说明 |
    | :--- | :--- | :--- | :--- |
-   | Create Draft | `save` | `NOTION_ACTION_CREATE_DRAFT` | 将草稿存入本地发件箖 |
-   | Reply All | `reply_all` | `NOTION_ACTION_REPLY_ALL` | ReplyAll + Send |
-   | Reply | `reply` | `NOTION_ACTION_REPLY` | Reply + Send |
-   | Forward | `forward` | `NOTION_ACTION_FORWARD` | Forward + Send，需 `To` 字段填写转发目标 |
-   | New Mail | `new_mail` | `NOTION_ACTION_NEW_MAIL` | 全新建邮件并发送（从 `NEW_MAIL_DATABASE_ID` 读取数据） |
-   | New Mail Draft | `new_mail_draft` | `NOTION_ACTION_NEW_MAIL_DRAFT` | 全新建邮件并保存草稿 |
-5. 该请求的 Action ID 需和 [.env](.env) 中配置的値保持一致。具体的自动化接口触发参数及动作映射配置请参考下图（参考图片：[automation.png](./img/automation.png)）：
+   | Create Draft | `?action=create_draft` | `https://example.ngrok-free.app/?action=create_draft` | 将草稿存入本地发件箱 |
+   | Reply All | `?action=reply_all` | `https://example.ngrok-free.app/?action=reply_all` | ReplyAll + Send |
+   | Reply | `?action=reply` | `https://example.ngrok-free.app/?action=reply` | Reply + Send |
+   | Forward | `?action=forward` | `https://example.ngrok-free.app/?action=forward` | Forward + Send，需 `To` 字段填写转发目标 |
+   | New Mail Draft | `?action=new_mail_draft` | `https://example.ngrok-free.app/?action=new_mail_draft` | 全新建邮件并保存草稿（需配置 `NEW_MAIL_DATABASE_ID`） |
 
    ![Notion 自动化动作触发配置](./img/automation.png)
 
