@@ -246,9 +246,6 @@ class Config(BaseSettings):
     )
     
     # Notion Automation Webhook 配置 (URL based actions now)
-    notion_action_new_mail: str = Field(
-        default="", env="NOTION_ACTION_NEW_MAIL"
-    )
     new_mail_database_id: str = Field(
         default="", env="NEW_MAIL_DATABASE_ID"
     )
