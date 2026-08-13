@@ -38,12 +38,13 @@ def _start_progress_hider(duration: float = 15.0):
     t.start()
     return t
 
-def _append_cc_without_duplicates(mail_item, cc_more: str):
+def _append_recipients_without_duplicates(mail_item, more_recips: str, recip_type: int = 2):
     """
-    Append CC emails to mail_item without duplicating them.
+    Append emails to mail_item without duplicating them.
     Checks existing To and CC lists.
+    recip_type: 1 for olTo, 2 for olCC
     """
-    if not cc_more:
+    if not more_recips:
         return
     import re
     try:
@@ -69,9 +70,9 @@ def _append_cc_without_duplicates(mail_item, cc_more: str):
         extract_identifiers(getattr(mail_item, "To", ""))
         extract_identifiers(getattr(mail_item, "CC", ""))
         
-        new_ccs = []
-        cc_candidates = re.split(r'[;,]', cc_more)
-        for c in cc_candidates:
+        new_recips = []
+        candidates = re.split(r'[;,]', more_recips)
+        for c in candidates:
             c = c.strip()
             if not c:
                 continue
@@ -88,30 +89,30 @@ def _append_cc_without_duplicates(mail_item, cc_more: str):
                     is_duplicate = True
                     
                 if not is_duplicate:
-                    new_ccs.append(email_val)
+                    new_recips.append(email_val)
                     existing_identifiers.add(email_val)
                     if name_part:
                         existing_identifiers.add(name_part.lower())
             else:
                 # Fallback for Exchange internal names or just plain names
                 if c.lower() not in existing_identifiers:
-                    new_ccs.append(c)
+                    new_recips.append(c)
                     existing_identifiers.add(c.lower())
                     
-        if new_ccs:
-            for cc_email in new_ccs:
+        if new_recips:
+            for email in new_recips:
                 try:
-                    recip = mail_item.Recipients.Add(cc_email)
-                    recip.Type = 2  # olCC
+                    recip = mail_item.Recipients.Add(email)
+                    recip.Type = recip_type
                     recip.Resolve()
                 except Exception as e:
-                    logger.warning(f"Error adding CC recipient {cc_email}: {e}")
+                    logger.warning(f"Error adding recipient {email}: {e}")
             
-            logger.info(f"Appended additional CC (deduplicated): {'; '.join(new_ccs)}")
+            logger.info(f"Appended additional recipients (deduplicated, type={recip_type}): {'; '.join(new_recips)}")
         else:
-            logger.info(f"No additional CC needed (all already in To/CC).")
+            logger.info(f"No additional recipients needed (all already in To/CC).")
     except Exception as e:
-        logger.warning(f"Failed to append CC: {e}")
+        logger.warning(f"Failed to append recipients: {e}")
 
 def execute_draft_action(payload: dict):
     """
@@ -244,36 +245,12 @@ def execute_draft_action(payload: dict):
             try:
                 logger.info("Calling target_item.Forward()...")
                 reply = target_item.Forward()
-                if forward_to:
-                    import re
-                    for t in re.split(r'[;,]', forward_to):
-                        t = t.strip()
-                        if t:
-                            try:
-                                recip = reply.Recipients.Add(t)
-                                recip.Type = 1  # olTo
-                                recip.Resolve()
-                            except Exception as e:
-                                logger.warning(f"Error adding Forward To recipient {t}: {e}")
-                    logger.info(f"Setting Forward To field with: {forward_to}")
             except Exception as e:
                 logger.warning(f"Forward() failed with exception: {e}")
         elif final_action == "reply":
             try:
                 logger.info("Calling target_item.Reply()...")
                 reply = target_item.Reply()
-                if reply_to:
-                    import re
-                    for t in re.split(r'[;,]', reply_to):
-                        t = t.strip()
-                        if t:
-                            try:
-                                recip = reply.Recipients.Add(t)
-                                recip.Type = 1  # olTo
-                                recip.Resolve()
-                            except Exception as e:
-                                logger.warning(f"Error adding Reply To recipient {t}: {e}")
-                    logger.info(f"Overriding To field with: {reply_to}")
             except Exception as e:
                 logger.warning(f"Reply() failed with exception: {e}")
         else: # "reply_all" or "save"
@@ -314,8 +291,17 @@ def execute_draft_action(payload: dict):
         else:
             reply.Body = reply_suggestion + "\n\n" + getattr(reply, "Body", "")
 
-        if reply is not None and cc_more:
-            _append_cc_without_duplicates(reply, cc_more)
+        if reply is not None:
+            if final_action == "forward":
+                _append_recipients_without_duplicates(reply, forward_to, 1)
+            elif final_action == "reply":
+                _append_recipients_without_duplicates(reply, reply_to, 1)
+                _append_recipients_without_duplicates(reply, forward_to, 1)
+            else: # reply_all or save
+                _append_recipients_without_duplicates(reply, forward_to, 1)
+                
+            if cc_more:
+                _append_recipients_without_duplicates(reply, cc_more, 2)
 
         # 3. Final Action: Send or Save (with configurable timeout)
         publish_timeout = config.outlook_publish_timeout_sec
