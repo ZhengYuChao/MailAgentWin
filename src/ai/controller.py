@@ -275,11 +275,24 @@ class AIController:
                     prompt_text = f.read().strip()
                     
             # 移除可能拦截点击的弹窗 (如 "Open in Notion's desktop app?")
+            # 注意：只移除包含 "desktop app" 等提示文字的弹窗，
+            # 不能移除所有 overlay-container，因为模型选择下拉菜单也使用 overlay 渲染
             try:
-                await page.evaluate('''() => {
-                    document.querySelectorAll('.notion-overlay-container').forEach(el => el.remove());
+                removed = await page.evaluate('''() => {
+                    let count = 0;
+                    document.querySelectorAll('.notion-overlay-container').forEach(el => {
+                        const text = el.innerText || '';
+                        if (text.includes('desktop app') || text.includes('Open in')) {
+                            el.remove();
+                            count++;
+                        }
+                    });
+                    return count;
                 }''')
-                logger.info("ℹ️ Cleaned up Notion overlay containers.")
+                if removed > 0:
+                    logger.info(f"ℹ️ Cleaned up {removed} Notion overlay container(s) with desktop app prompt.")
+                else:
+                    logger.info("ℹ️ No blocking Notion overlay containers found.")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to clean up overlay containers: {e}")
 
@@ -313,15 +326,45 @@ class AIController:
                             selector_parts.append(f"div[class*='model']:has-text('{m}')")
                     
                     full_selector = ", ".join(selector_parts)
-                    trigger = page.locator(full_selector).first
+                    all_triggers = page.locator(full_selector)
                     
+                    # 在所有匹配中找到最小（最精确）的可见元素作为触发器
+                    trigger = None
                     found = False
-                    try:
-                        found = await trigger.is_visible(timeout=5000)
-                    except Exception:
-                        pass
+                    best_area = float('inf')
                     
-                    if found:
+                    try:
+                        count = await all_triggers.count()
+                        logger.info(f"ℹ️ Found {count} potential model selector candidates")
+                        for i in range(count):
+                            candidate = all_triggers.nth(i)
+                            try:
+                                if not await candidate.is_visible(timeout=500):
+                                    continue
+                                box = await candidate.bounding_box()
+                                if not box:
+                                    continue
+                                area = box['width'] * box['height']
+                                text = (await candidate.inner_text()).strip()
+                                tag = await candidate.evaluate("el => el.tagName.toLowerCase()")
+                                cls = await candidate.evaluate("el => (el.className || '').toString().slice(0, 60)")
+                                logger.info(f"  Candidate[{i}]: tag={tag}, class={cls}, size={box['width']:.0f}x{box['height']:.0f}, text='{text[:30]}'")
+                                # 选最小的可见元素（模型选择器按钮通常很小，< 200x50 像素）
+                                if area < best_area and box['width'] < 300 and box['height'] < 80:
+                                    best_area = area
+                                    trigger = candidate
+                                    found = True
+                            except Exception:
+                                continue
+                    except Exception:
+                        # 回退：使用 .first
+                        trigger = all_triggers.first
+                        try:
+                            found = await trigger.is_visible(timeout=5000)
+                        except Exception:
+                            pass
+                    
+                    if found and trigger:
                         current_text = await trigger.inner_text()
                         logger.info(f"ℹ️ Found model selector, currently showing: '{current_text.strip()}'")
                         
@@ -329,18 +372,78 @@ class AIController:
                         if target_model_name.lower() in current_text.strip().lower():
                             logger.info(f"✅ Current model is already '{target_model_name}', no switch needed.")
                         else:
-                            # 点击展开模型下拉菜单
-                            await trigger.click(delay=random.randint(50, 150))
-                            await asyncio.sleep(random.uniform(1.5, 2.5))
+                            # 点击展开模型下拉菜单 - 尝试多种点击方式
+                            dropdown_opened = False
+                            
+                            for click_attempt, click_method in enumerate(["click", "force_click", "js_click"], 1):
+                                logger.info(f"🖱️ Clicking model selector (attempt {click_attempt}: {click_method})...")
+                                
+                                if click_method == "click":
+                                    await trigger.click(delay=random.randint(50, 150))
+                                elif click_method == "force_click":
+                                    await trigger.click(force=True, delay=random.randint(50, 150))
+                                else:  # js_click
+                                    await trigger.evaluate("el => el.click()")
+                                
+                                await asyncio.sleep(random.uniform(1.5, 2.5))
+                                
+                                # 验证下拉菜单是否真的打开了
+                                # Notion 的下拉菜单会出现在 .notion-overlay-container 中
+                                overlay_count = await page.evaluate('''() => {
+                                    return document.querySelectorAll('.notion-overlay-container').length;
+                                }''')
+                                
+                                # 也检查是否有任何新的浮动面板
+                                has_popup = await page.evaluate('''() => {
+                                    const overlays = document.querySelectorAll('.notion-overlay-container');
+                                    for (const o of overlays) {
+                                        // 检查是否包含模型名文本（说明是模型选择下拉）
+                                        if (o.innerText && (o.innerText.includes('GPT') || o.innerText.includes('Claude') || o.innerText.includes('Sonnet') || o.innerText.includes('Gemini') || o.innerText.includes('Opus') || o.innerText.includes('Auto'))) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }''')
+                                
+                                logger.info(f"  overlay_count={overlay_count}, has_model_popup={has_popup}")
+                                
+                                if has_popup:
+                                    dropdown_opened = True
+                                    break
+                                    
+                                # 如果没有打开，按 Escape 清理可能的半开状态，再重试
+                                if click_attempt < 3:
+                                    await page.keyboard.press("Escape")
+                                    await asyncio.sleep(0.5)
                             
                             # 截图记录下拉菜单打开后的状态（调试用）
                             model_debug_path = os.path.join(script_dir, "model_switch_debug.png")
                             await page.screenshot(path=model_debug_path)
-                            logger.info(f"📸 Dropdown opened screenshot saved to: {model_debug_path}")
+                            logger.info(f"📸 Dropdown {'opened' if dropdown_opened else 'FAILED to open'} screenshot saved to: {model_debug_path}")
                             
                             # ---- 辅助函数：在页面中查找目标模型菜单项 ----
                             async def _find_model_item(model_name: str) -> tuple:
                                 """尝试多种策略查找目标模型菜单项，返回 (locator, found_bool)"""
+                                
+                                # 策略0：直接在 .notion-overlay-container 内搜索（Notion 的下拉菜单渲染在这里）
+                                try:
+                                    overlay = page.locator(".notion-overlay-container")
+                                    overlay_count = await overlay.count()
+                                    logger.info(f"  ℹ Found {overlay_count} notion-overlay-container(s)")
+                                    for oi in range(overlay_count):
+                                        ov = overlay.nth(oi)
+                                        try:
+                                            if not await ov.is_visible(timeout=300):
+                                                continue
+                                            item = ov.get_by_text(model_name, exact=False).first
+                                            if await item.is_visible(timeout=500):
+                                                logger.info(f"  ✓ Found via .notion-overlay-container[{oi}]")
+                                                return item, True
+                                        except Exception:
+                                            continue
+                                except Exception:
+                                    pass
+                                
                                 # 策略1：标准 ARIA 角色选择器
                                 role_selector = ", ".join([
                                     f"[role='option']:has-text('{model_name}')",
@@ -356,25 +459,27 @@ class AIController:
                                 except Exception:
                                     pass
                                 
-                                # 策略2：在弹出层/覆盖层容器内搜索（Notion 使用自定义 overlay）
+                                # 策略2：在弹出层/覆盖层容器内搜索（通用选择器）
                                 popup_selectors = [
                                     "div[class*='overlay']",
                                     "div[class*='popup']",
                                     "div[class*='dropdown']",
                                     "div[class*='popover']",
                                     "div[class*='menu']",
-                                    "div[class*='modal']",
                                     "div[style*='position: fixed']",
                                     "div[style*='position: absolute']",
                                 ]
                                 for ps in popup_selectors:
                                     try:
-                                        container = page.locator(ps).first
-                                        if await container.is_visible(timeout=500):
-                                            item = container.get_by_text(model_name, exact=False).first
-                                            if await item.is_visible(timeout=500):
-                                                logger.info(f"  ✓ Found via popup container ({ps})")
-                                                return item, True
+                                        containers = page.locator(ps)
+                                        cnt = await containers.count()
+                                        for ci in range(cnt):
+                                            container = containers.nth(ci)
+                                            if await container.is_visible(timeout=300):
+                                                item = container.get_by_text(model_name, exact=False).first
+                                                if await item.is_visible(timeout=300):
+                                                    logger.info(f"  ✓ Found via popup container ({ps}[{ci}])")
+                                                    return item, True
                                     except Exception:
                                         continue
                                 
@@ -388,8 +493,7 @@ class AIController:
                                     except Exception:
                                         continue
                                 
-                                # 策略4：宽泛文本匹配，但排除触发按钮本身
-                                # get_by_text 会匹配所有包含该文本的元素
+                                # 策略4：宽泛文本匹配，遍历所有可见匹配项
                                 try:
                                     all_matches = page.get_by_text(model_name, exact=False)
                                     count = await all_matches.count()
@@ -399,17 +503,15 @@ class AIController:
                                         try:
                                             if not await candidate.is_visible(timeout=300):
                                                 continue
-                                            # 排除触发按钮本身（它的文字是当前模型名，不是目标模型名）
                                             tag = await candidate.evaluate("el => el.tagName.toLowerCase()")
                                             role_attr = await candidate.evaluate("el => el.getAttribute('role') || ''")
                                             class_attr = await candidate.evaluate("el => el.className || ''")
                                             text = (await candidate.inner_text()).strip()
                                             logger.info(f"  ℹ Match[{i}]: tag={tag}, role={role_attr}, class={class_attr[:60]}, text='{text[:50]}'")
                                             
-                                            # 跳过明显是大容器的元素（文本过长说明是父容器不是菜单项）
+                                            # 跳过明显是大容器的元素
                                             if len(text) > 80:
                                                 continue
-                                            # 如果文本就包含目标模型名，认为找到了
                                             if model_name.lower() in text.lower():
                                                 logger.info(f"  ✓ Found via broad text match at index {i}")
                                                 return candidate, True
@@ -417,6 +519,42 @@ class AIController:
                                             continue
                                 except Exception as e:
                                     logger.info(f"  ✗ Broad text search failed: {e}")
+                                
+                                # 策略5：通过 JS 直接在 overlay 内按文本查找并点击
+                                # 这是最后的兜底手段
+                                try:
+                                    clicked = await page.evaluate(f'''(targetText) => {{
+                                        const overlays = document.querySelectorAll('.notion-overlay-container');
+                                        for (const overlay of overlays) {{
+                                            const walker = document.createTreeWalker(overlay, NodeFilter.SHOW_TEXT);
+                                            while (walker.nextNode()) {{
+                                                const node = walker.currentNode;
+                                                if (node.textContent && node.textContent.trim().toLowerCase().includes(targetText.toLowerCase())) {{
+                                                    // 找到包含目标文本的最近的可点击元素
+                                                    let el = node.parentElement;
+                                                    while (el && el !== overlay) {{
+                                                        const style = window.getComputedStyle(el);
+                                                        if (style.cursor === 'pointer' || el.onclick || el.getAttribute('role')) {{
+                                                            el.click();
+                                                            return 'clicked: ' + el.tagName + ' / ' + (el.textContent || '').trim().slice(0, 50);
+                                                        }}
+                                                        el = el.parentElement;
+                                                    }}
+                                                    // 如果没找到可点击的父元素，直接点击文本节点的父元素
+                                                    if (node.parentElement) {{
+                                                        node.parentElement.click();
+                                                        return 'clicked-parent: ' + node.parentElement.tagName + ' / ' + node.textContent.trim().slice(0, 50);
+                                                    }}
+                                                }}
+                                            }}
+                                        }}
+                                        return null;
+                                    }}''', target_model_name)
+                                    if clicked:
+                                        logger.info(f"  ✓ Found and clicked via JS DOM traversal: {clicked}")
+                                        return None, True  # 已经通过 JS 点击了，不需要再 click
+                                except Exception as e:
+                                    logger.info(f"  ✗ JS DOM traversal failed: {e}")
                                 
                                 return None, False
                             
@@ -461,6 +599,9 @@ class AIController:
                                             logger.info(f"🔍 [Round 3] Trying partial match with keyword '{keyword}'...")
                                             menu_item, menu_found = await _find_model_item(keyword)
                                             if menu_found:
+                                                if menu_item is None:
+                                                    # JS 已经点击了，直接退出
+                                                    break
                                                 # 二次确认：验证完整模型名
                                                 try:
                                                     item_text = (await menu_item.inner_text()).strip()
@@ -478,8 +619,13 @@ class AIController:
                                                 break
                             
                             if menu_found and menu_item:
+                                # 通过 Playwright locator 点击
                                 logger.info(f"✅ Found target model '{target_model_name}' in dropdown menu, selecting...")
                                 await menu_item.click(delay=random.randint(50, 150))
+                                await asyncio.sleep(random.uniform(0.5, 1.0))
+                            elif menu_found and menu_item is None:
+                                # 已经通过 JS 直接点击了
+                                logger.info(f"✅ Target model '{target_model_name}' was selected via JS click.")
                                 await asyncio.sleep(random.uniform(0.5, 1.0))
                             else:
                                 logger.warning(f"⚠️ Target model '{target_model_name}' not found in dropdown menu, keeping current model.")
