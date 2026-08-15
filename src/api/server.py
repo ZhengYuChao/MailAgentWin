@@ -150,8 +150,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             logger.info(f"✅ [NewMail] Validation passed. Subject: {subject[:40]}, To: {to[:40]}, Email Body: {len(email_body)} chars")
             
             final_action = "new_mail"
-            if url_action in ["new_mail_draft", "draft", "save"]:
+            if url_action in ["new_mail_draft", "draft", "save", "create_draft"]:
                 final_action = "new_mail_draft"
+            elif url_action == "send":
+                final_action = "new_mail"
                 
             payload = {
                 "action": final_action,

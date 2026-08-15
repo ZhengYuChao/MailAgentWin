@@ -15,15 +15,22 @@ htmlcov/
 notion_auth.json
 user_agent.txt
 
+# OS files
+.DS_Store
+**/.DS_Store
+
 # Local databases and backups
 data/*.db
 data/*.bak
+data/*.db.*
 data/*.db-journal
 
 # Logs and screenshots
 logs/
 *.log
 logs/*.png
+*.png
+prompt_daily.txt
 
 # Webhook payload logs and other temporary scratch files
 scratch/webhook_history.jsonl

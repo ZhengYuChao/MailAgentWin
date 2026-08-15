@@ -331,67 +331,161 @@ class AIController:
                         else:
                             # 点击展开模型下拉菜单
                             await trigger.click(delay=random.randint(50, 150))
-                            await asyncio.sleep(random.uniform(1.2, 2.0))
+                            await asyncio.sleep(random.uniform(1.5, 2.5))
                             
-                            # 在展开的下拉菜单中寻找目标模型
-                            # 使用多种方式匹配菜单项
-                            menu_item = page.locator(f"[role='option']:has-text('{target_model_name}'), [role='menuitem']:has-text('{target_model_name}'), [role='menuitemradio']:has-text('{target_model_name}'), div[class*='option']:has-text('{target_model_name}')").first
+                            # 截图记录下拉菜单打开后的状态（调试用）
+                            model_debug_path = os.path.join(script_dir, "model_switch_debug.png")
+                            await page.screenshot(path=model_debug_path)
+                            logger.info(f"📸 Dropdown opened screenshot saved to: {model_debug_path}")
                             
-                            menu_found = False
-                            try:
-                                menu_found = await menu_item.is_visible(timeout=3000)
-                            except Exception:
-                                pass
-                            
-                            if not menu_found:
-                                # 回退：用更宽泛的文本匹配
-                                menu_item = page.get_by_text(target_model_name, exact=False).first
+                            # ---- 辅助函数：在页面中查找目标模型菜单项 ----
+                            async def _find_model_item(model_name: str) -> tuple:
+                                """尝试多种策略查找目标模型菜单项，返回 (locator, found_bool)"""
+                                # 策略1：标准 ARIA 角色选择器
+                                role_selector = ", ".join([
+                                    f"[role='option']:has-text('{model_name}')",
+                                    f"[role='menuitem']:has-text('{model_name}')",
+                                    f"[role='menuitemradio']:has-text('{model_name}')",
+                                    f"[role='listbox'] >> text='{model_name}'",
+                                ])
+                                item = page.locator(role_selector).first
                                 try:
-                                    menu_found = await menu_item.is_visible(timeout=2000)
+                                    if await item.is_visible(timeout=2000):
+                                        logger.info(f"  ✓ Found via ARIA role selector")
+                                        return item, True
                                 except Exception:
                                     pass
-
-                            # 新增：适配 Notion AI 新版界面的 "Older models" 二级菜单
-                            if not menu_found:
-                                logger.info("ℹ️ Model not found in primary list, attempting to scroll and look for 'Older models'...")
-                                # 尝试按几下 PageDown，应对可能有虚拟滚动的情况
-                                for _ in range(2):
-                                    await page.keyboard.press("PageDown")
-                                    await asyncio.sleep(0.3)
                                 
+                                # 策略2：在弹出层/覆盖层容器内搜索（Notion 使用自定义 overlay）
+                                popup_selectors = [
+                                    "div[class*='overlay']",
+                                    "div[class*='popup']",
+                                    "div[class*='dropdown']",
+                                    "div[class*='popover']",
+                                    "div[class*='menu']",
+                                    "div[class*='modal']",
+                                    "div[style*='position: fixed']",
+                                    "div[style*='position: absolute']",
+                                ]
+                                for ps in popup_selectors:
+                                    try:
+                                        container = page.locator(ps).first
+                                        if await container.is_visible(timeout=500):
+                                            item = container.get_by_text(model_name, exact=False).first
+                                            if await item.is_visible(timeout=500):
+                                                logger.info(f"  ✓ Found via popup container ({ps})")
+                                                return item, True
+                                    except Exception:
+                                        continue
+                                
+                                # 策略3：用 get_by_role 配合 name 匹配
+                                for role in ["option", "menuitem", "menuitemradio"]:
+                                    try:
+                                        item = page.get_by_role(role, name=model_name)
+                                        if await item.first.is_visible(timeout=500):
+                                            logger.info(f"  ✓ Found via get_by_role('{role}')")
+                                            return item.first, True
+                                    except Exception:
+                                        continue
+                                
+                                # 策略4：宽泛文本匹配，但排除触发按钮本身
+                                # get_by_text 会匹配所有包含该文本的元素
+                                try:
+                                    all_matches = page.get_by_text(model_name, exact=False)
+                                    count = await all_matches.count()
+                                    logger.info(f"  ℹ get_by_text found {count} matches for '{model_name}'")
+                                    for i in range(count):
+                                        candidate = all_matches.nth(i)
+                                        try:
+                                            if not await candidate.is_visible(timeout=300):
+                                                continue
+                                            # 排除触发按钮本身（它的文字是当前模型名，不是目标模型名）
+                                            tag = await candidate.evaluate("el => el.tagName.toLowerCase()")
+                                            role_attr = await candidate.evaluate("el => el.getAttribute('role') || ''")
+                                            class_attr = await candidate.evaluate("el => el.className || ''")
+                                            text = (await candidate.inner_text()).strip()
+                                            logger.info(f"  ℹ Match[{i}]: tag={tag}, role={role_attr}, class={class_attr[:60]}, text='{text[:50]}'")
+                                            
+                                            # 跳过明显是大容器的元素（文本过长说明是父容器不是菜单项）
+                                            if len(text) > 80:
+                                                continue
+                                            # 如果文本就包含目标模型名，认为找到了
+                                            if model_name.lower() in text.lower():
+                                                logger.info(f"  ✓ Found via broad text match at index {i}")
+                                                return candidate, True
+                                        except Exception:
+                                            continue
+                                except Exception as e:
+                                    logger.info(f"  ✗ Broad text search failed: {e}")
+                                
+                                return None, False
+                            
+                            # ---- 第一轮查找 ----
+                            logger.info(f"🔍 [Round 1] Searching for '{target_model_name}' in dropdown...")
+                            menu_item, menu_found = await _find_model_item(target_model_name)
+                            
+                            # ---- 第二轮：尝试滚动下拉列表 + Older models ----
+                            if not menu_found:
+                                logger.info("ℹ️ Model not found in primary list, attempting to scroll dropdown and look for 'Older models'...")
+                                
+                                # 尝试用 ArrowDown 在菜单内滚动（比 PageDown 更安全，不会关闭菜单）
+                                for _ in range(8):
+                                    await page.keyboard.press("ArrowDown")
+                                    await asyncio.sleep(0.15)
+                                
+                                await asyncio.sleep(0.5)
+                                
+                                # 检查是否有 "Older models" 按钮
                                 older_models_btn = page.get_by_text("Older models", exact=False).first
                                 try:
-                                    if await older_models_btn.is_visible(timeout=1000):
+                                    if await older_models_btn.is_visible(timeout=1500):
                                         logger.info("ℹ️ Clicking 'Older models' to reveal more options...")
                                         await older_models_btn.click(delay=random.randint(50, 150))
-                                        await asyncio.sleep(random.uniform(1.2, 2.0))
+                                        await asyncio.sleep(random.uniform(1.5, 2.5))
                                 except Exception:
                                     pass
                                 
-                                # 在（可能展开了 Older models）列表里重新查找目标模型
-                                menu_item = page.locator(f"[role='option']:has-text('{target_model_name}'), [role='menuitem']:has-text('{target_model_name}'), [role='menuitemradio']:has-text('{target_model_name}'), div[class*='option']:has-text('{target_model_name}')").first
-                                try:
-                                    menu_found = await menu_item.is_visible(timeout=2000)
-                                except Exception:
-                                    pass
-                                    
-                                if not menu_found:
-                                    menu_item = page.get_by_text(target_model_name, exact=False).first
-                                    try:
-                                        menu_found = await menu_item.is_visible(timeout=2000)
-                                    except Exception:
-                                        pass
+                                logger.info(f"🔍 [Round 2] Searching again for '{target_model_name}'...")
+                                menu_item, menu_found = await _find_model_item(target_model_name)
                             
-                            if menu_found:
+                            # ---- 第三轮：尝试用模型名的部分文本匹配 ----
+                            if not menu_found:
+                                # 有时下拉里显示的模型名可能和配置中的不完全一致
+                                # 例如 "GPT-5.6 Sol" 可能显示为 "GPT‑5.6 Sol"（连字符 vs 减号）
+                                # 尝试只用关键部分匹配
+                                parts = target_model_name.split()
+                                if len(parts) > 1:
+                                    # 用最后一个有意义的词作为关键词（如 "Sol"）
+                                    for keyword in reversed(parts):
+                                        if len(keyword) >= 2 and keyword.lower() not in ("the", "and", "for"):
+                                            logger.info(f"🔍 [Round 3] Trying partial match with keyword '{keyword}'...")
+                                            menu_item, menu_found = await _find_model_item(keyword)
+                                            if menu_found:
+                                                # 二次确认：验证完整模型名
+                                                try:
+                                                    item_text = (await menu_item.inner_text()).strip()
+                                                    # 使用更宽松的比较（忽略特殊连字符/空格差异）
+                                                    import unicodedata
+                                                    normalized_target = unicodedata.normalize("NFKC", target_model_name).lower()
+                                                    normalized_item = unicodedata.normalize("NFKC", item_text).lower()
+                                                    if normalized_target not in normalized_item:
+                                                        logger.info(f"  ✗ Partial match '{item_text}' doesn't contain full target, skipping")
+                                                        menu_found = False
+                                                        continue
+                                                except Exception:
+                                                    pass
+                                            if menu_found:
+                                                break
+                            
+                            if menu_found and menu_item:
                                 logger.info(f"✅ Found target model '{target_model_name}' in dropdown menu, selecting...")
                                 await menu_item.click(delay=random.randint(50, 150))
                                 await asyncio.sleep(random.uniform(0.5, 1.0))
                             else:
                                 logger.warning(f"⚠️ Target model '{target_model_name}' not found in dropdown menu, keeping current model.")
-                                # 截图辅助调试
-                                model_debug_path = os.path.join(script_dir, "model_switch_debug.png")
+                                # 截图辅助调试（此时菜单仍然打开）
                                 await page.screenshot(path=model_debug_path)
-                                logger.info(f"📸 Model switch debug screenshot saved to: {model_debug_path}")
+                                logger.info(f"📸 Model switch FAILED debug screenshot saved to: {model_debug_path}")
                             
                             # 按 Escape 确保菜单收起
                             await page.keyboard.press("Escape")
