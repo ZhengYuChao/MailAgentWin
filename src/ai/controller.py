@@ -375,44 +375,109 @@ class AIController:
                             # 点击展开模型下拉菜单 - 尝试多种点击方式
                             dropdown_opened = False
                             
-                            for click_attempt, click_method in enumerate(["click", "force_click", "js_click"], 1):
+                            # 获取触发器的坐标
+                            trigger_box = await trigger.bounding_box()
+                            
+                            click_strategies = [
+                                "mouse_click",       # 直接用鼠标坐标点击（最可靠）
+                                "playwright_click",  # Playwright 内置 click
+                                "parent_click",      # 点击父元素
+                                "dispatchEvent",     # React 合成事件
+                            ]
+                            
+                            for click_attempt, click_method in enumerate(click_strategies, 1):
                                 logger.info(f"🖱️ Clicking model selector (attempt {click_attempt}: {click_method})...")
                                 
-                                if click_method == "click":
-                                    await trigger.click(delay=random.randint(50, 150))
-                                elif click_method == "force_click":
-                                    await trigger.click(force=True, delay=random.randint(50, 150))
-                                else:  # js_click
-                                    await trigger.evaluate("el => el.click()")
+                                try:
+                                    if click_method == "mouse_click" and trigger_box:
+                                        # 直接使用鼠标坐标点击 — 绕过所有 DOM 层级问题
+                                        cx = trigger_box['x'] + trigger_box['width'] / 2
+                                        cy = trigger_box['y'] + trigger_box['height'] / 2
+                                        logger.info(f"  Mouse clicking at ({cx:.0f}, {cy:.0f})")
+                                        await page.mouse.click(cx, cy, delay=random.randint(50, 150))
+                                    elif click_method == "playwright_click":
+                                        await trigger.click(force=True, delay=random.randint(50, 150))
+                                    elif click_method == "parent_click":
+                                        # 尝试点击父元素（React 事件可能绑定在父级）
+                                        await trigger.evaluate('''el => {
+                                            let p = el.parentElement;
+                                            for (let i = 0; i < 5 && p; i++) {
+                                                p.click();
+                                                p = p.parentElement;
+                                            }
+                                        }''')
+                                    elif click_method == "dispatchEvent":
+                                        # 分发完整的 MouseEvent（支持 React 合成事件系统）
+                                        await trigger.evaluate('''el => {
+                                            const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                                            for (const evtName of events) {
+                                                const evt = new MouseEvent(evtName, {
+                                                    bubbles: true, cancelable: true, view: window
+                                                });
+                                                el.dispatchEvent(evt);
+                                            }
+                                        }''')
+                                except Exception as e:
+                                    logger.info(f"  Click method {click_method} raised: {e}")
                                 
                                 await asyncio.sleep(random.uniform(1.5, 2.5))
                                 
                                 # 验证下拉菜单是否真的打开了
-                                # Notion 的下拉菜单会出现在 .notion-overlay-container 中
-                                overlay_count = await page.evaluate('''() => {
-                                    return document.querySelectorAll('.notion-overlay-container').length;
-                                }''')
-                                
-                                # 也检查是否有任何新的浮动面板
-                                has_popup = await page.evaluate('''() => {
+                                # 检查 Notion overlay 以及页面上任何包含模型名文本的新元素
+                                popup_info = await page.evaluate('''() => {
+                                    const result = {
+                                        overlay_count: document.querySelectorAll('.notion-overlay-container').length,
+                                        has_model_popup: false,
+                                        popup_source: '',
+                                        dom_debug: ''
+                                    };
+                                    
+                                    // 检查 .notion-overlay-container
                                     const overlays = document.querySelectorAll('.notion-overlay-container');
                                     for (const o of overlays) {
-                                        // 检查是否包含模型名文本（说明是模型选择下拉）
-                                        if (o.innerText && (o.innerText.includes('GPT') || o.innerText.includes('Claude') || o.innerText.includes('Sonnet') || o.innerText.includes('Gemini') || o.innerText.includes('Opus') || o.innerText.includes('Auto'))) {
-                                            return true;
+                                        const text = o.innerText || '';
+                                        if (text.includes('GPT') || text.includes('Claude') || text.includes('Sonnet') || text.includes('Gemini') || text.includes('Opus') || text.includes('Kimi')) {
+                                            result.has_model_popup = true;
+                                            result.popup_source = 'notion-overlay: ' + text.slice(0, 100);
+                                            return result;
                                         }
                                     }
-                                    return false;
+                                    
+                                    // 检查任何 fixed/absolute 定位且含模型名的元素（可能是 React portal）
+                                    const allElements = document.querySelectorAll('*');
+                                    for (const el of allElements) {
+                                        const style = window.getComputedStyle(el);
+                                        if ((style.position === 'fixed' || style.position === 'absolute') && style.display !== 'none' && style.visibility !== 'hidden') {
+                                            const text = el.innerText || '';
+                                            if (text.length > 10 && text.length < 500 && (text.includes('GPT') || text.includes('Claude') || text.includes('Sonnet') || text.includes('Opus') || text.includes('Kimi'))) {
+                                                result.has_model_popup = true;
+                                                result.popup_source = el.tagName + '.' + (el.className || '').toString().slice(0, 40) + ': ' + text.slice(0, 80);
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // 生成 DOM 调试信息：列出所有 overlay 和 fixed 定位元素
+                                    const debugParts = [];
+                                    overlays.forEach((o, i) => debugParts.push(`overlay[${i}]: ${(o.innerText || '').slice(0, 50)}`));
+                                    document.querySelectorAll('[style*="position: fixed"], [style*="position: absolute"]').forEach((el, i) => {
+                                        if (i < 5) debugParts.push(`fixed[${i}]: ${el.tagName}.${(el.className || '').toString().slice(0, 30)} text=${(el.innerText || '').slice(0, 30)}`);
+                                    });
+                                    result.dom_debug = debugParts.join(' | ') || 'no overlays or fixed elements';
+                                    
+                                    return result;
                                 }''')
                                 
-                                logger.info(f"  overlay_count={overlay_count}, has_model_popup={has_popup}")
+                                logger.info(f"  overlay_count={popup_info['overlay_count']}, has_model_popup={popup_info['has_model_popup']}, source={popup_info.get('popup_source', '')}")
+                                if popup_info.get('dom_debug'):
+                                    logger.info(f"  DOM debug: {popup_info['dom_debug']}")
                                 
-                                if has_popup:
+                                if popup_info['has_model_popup']:
                                     dropdown_opened = True
                                     break
                                     
                                 # 如果没有打开，按 Escape 清理可能的半开状态，再重试
-                                if click_attempt < 3:
+                                if click_attempt < len(click_strategies):
                                     await page.keyboard.press("Escape")
                                     await asyncio.sleep(0.5)
                             
