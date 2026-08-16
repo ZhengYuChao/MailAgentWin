@@ -42,7 +42,7 @@ class NotionSync:
         if not email.attachments:
             return uploaded_attachments, failed_filenames
 
-        logger.info(f"Email contains {len(email.attachments)} attachments, starting upload...")
+        logger.debug(f"Email contains {len(email.attachments)} attachments, starting upload...")
         from tqdm import tqdm
 
         for attachment in tqdm(email.attachments, desc="Uploading Attachments", unit="file"):
@@ -75,7 +75,7 @@ class NotionSync:
         if not convertible:
             return converted_attachments
 
-        logger.info(f"Found {len(convertible)} convertible Office attachments")
+        logger.debug(f"Found {len(convertible)} convertible Office attachments")
 
         for attachment in convertible:
             try:
@@ -97,8 +97,8 @@ class NotionSync:
                 logger.warning(f"Failed to convert {attachment.filename}, skipping: {e}")
 
         if converted_attachments:
-            logger.info(f"Generated {len(converted_attachments)} converted attachments: "
-                        f"{[a.filename for a in converted_attachments]}")
+            logger.debug(f"Generated {len(converted_attachments)} converted attachments: "
+                         f"{[a.filename for a in converted_attachments]}")
         return converted_attachments
 
     async def _upload_eml_file(self, email: Email) -> Optional[str]:
@@ -110,7 +110,7 @@ class NotionSync:
             try:
                 # 默认直接上传 .eml 文件
                 file_upload_id = await self.client.upload_file(str(eml_path))
-                logger.info(f"Uploaded email file: {eml_path.name}")
+                logger.debug(f"Uploaded email file: {eml_path.name}")
                 return file_upload_id
             except Exception as e:
                 error_str = str(e)
@@ -125,7 +125,7 @@ class NotionSync:
                             zf.write(eml_path, eml_path.name)
                             
                         file_upload_id = await self.client.upload_file(str(zip_path))
-                        logger.info(f"Uploaded email zip file as fallback: {zip_path.name}")
+                        logger.debug(f"Uploaded email zip file as fallback: {zip_path.name}")
                         return file_upload_id
                     finally:
                         try:
@@ -147,17 +147,16 @@ class NotionSync:
         if len(children) <= 100:
             return await self.client.create_page(properties=properties, children=children, icon=icon)
 
-        logger.info(f"Email contains {len(children)} blocks, creating in batches...")
+        logger.debug(f"Email contains {len(children)} blocks, creating in batches...")
         page = await self.client.create_page(properties=properties, children=children[:100], icon=icon)
         page_id = page['id']
-        logger.info(f"Created page with first 100 blocks")
 
         remaining_blocks = children[100:]
         batch_size = 100
         for i in range(0, len(remaining_blocks), batch_size):
             batch = remaining_blocks[i:i + batch_size]
             await self.client.append_block_children(page_id, batch)
-            logger.info(f"Appended {len(batch)} blocks (batch {i//batch_size + 1})")
+            logger.debug(f"Appended {len(batch)} blocks (batch {i//batch_size + 1})")
         return page
 
     def _create_meeting_callout(self, invite: 'MeetingInvite') -> Dict[str, Any]:
@@ -392,28 +391,27 @@ class NotionSync:
         try:
             import time as _time
             _t0 = _time.time()
-            logger.info(f"🔄 [DEDUP-L3] Creating email page (v2): subject='{email.subject[:60]}', "
-                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
+            logger.debug(f"[DEDUP-L3] Creating email page (v2): subject='{email.subject[:60]}', "
+                         f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
             
             if email.message_id:
-                logger.info(f"🔍 [DEDUP-L3] Checking Notion for existing page with Message-ID={email.message_id[:60]}...")
+                logger.debug(f"[DEDUP-L3] Checking Notion for existing page with Message-ID={email.message_id[:60]}...")
                 page_exists = await self.client.check_page_exists(email.message_id)
                 _t1 = _time.time()
-                logger.info(f"🔍 [DEDUP-L3] check_page_exists result={page_exists} "
-                            f"(took {_t1 - _t0:.2f}s, message_id={email.message_id[:60]})")
+                logger.debug(f"[DEDUP-L3] check_page_exists result={page_exists} "
+                             f"(took {_t1 - _t0:.2f}s, message_id={email.message_id[:60]})")
                 
                 if page_exists:
                     existing = await self.client.query_database(filter_conditions={"property": "Message ID", "rich_text": {"equals": email.message_id}})
                     existing_id = existing[0].get("id") if existing else None
-                    logger.info(f"⏭️ [DEDUP-L3] Email already exists in Notion "
-                                f"(Message-ID: {email.message_id[:60]}, "
-                                f"existing_page_id={existing_id}), skipping.")
+                    logger.debug(f"[DEDUP-L3] Email already exists in Notion "
+                                 f"(Message-ID: {email.message_id[:60]}, existing_page_id={existing_id}), skipping.")
                     return existing_id
             else:
-                logger.warning(f"⚠️ [DEDUP-L3] No Message-ID, Notion dedup check SKIPPED for '{email.subject[:40]}'")
+                logger.debug(f"[DEDUP-L3] No Message-ID, Notion dedup check SKIPPED for '{email.subject[:40]}'")
             
-            logger.info(f"🆕 [DEDUP-L3] Page does NOT exist in Notion, proceeding to create. "
-                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
+            logger.debug(f"[DEDUP-L3] Page does NOT exist in Notion, proceeding to create. "
+                         f"message_id={email.message_id[:60] if email.message_id else 'NONE'}")
             
             from src.config import config as app_config
             if app_config.office_convert_enabled:
@@ -436,10 +434,9 @@ class NotionSync:
             page = await self._create_page_with_blocks(properties, children, email_icon)
             page_id = page['id']
             _t_created = _time.time()
-            logger.info(f"✅ [DEDUP-L3] Notion page CREATED: page_id={page_id}, "
-                        f"message_id={email.message_id[:60] if email.message_id else 'NONE'}, "
-                        f"subject='{email.subject[:40]}', "
-                        f"total_elapsed={_t_created - _t0:.2f}s")
+            logger.debug(f"[DEDUP-L3] Notion page CREATED: page_id={page_id}, "
+                         f"message_id={email.message_id[:60] if email.message_id else 'NONE'}, "
+                         f"subject='{email.subject[:40]}', total_elapsed={_t_created - _t0:.2f}s")
             if not skip_parent_lookup and email.thread_id: await self._handle_thread_relations(page_id, email)
             return page_id
         except Exception: raise

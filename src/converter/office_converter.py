@@ -121,10 +121,10 @@ def convert_to_pdf(input_path: str, output_dir: str) -> Optional[str]:
 
     expected_output = Path(output_dir) / f"{inp.stem}.pdf"
 
-    logger.info(f"Converting {inp.name} → PDF...")
+    logger.debug(f"Converting {inp.name} → PDF...")
     if _run_soffice_convert(input_path, output_dir):
         if expected_output.exists() and expected_output.stat().st_size > 0:
-            logger.info(f"Converted: {inp.name} → {expected_output.name} ({expected_output.stat().st_size} bytes)")
+            logger.debug(f"Converted: {inp.name} → {expected_output.name} ({expected_output.stat().st_size} bytes)")
             return str(expected_output)
 
     logger.warning(f"Failed to convert {inp.name} to PDF")
@@ -150,7 +150,7 @@ def convert_to_csv(input_path: str, output_dir: str) -> List[str]:
         return []
 
     try:
-        logger.info(f"Converting {inp.name} → CSV...")
+        logger.debug(f"Converting {inp.name} → CSV...")
 
         # 优先使用 calamine 引擎（Rust，4-18x 更快）
         try:
@@ -178,7 +178,7 @@ def convert_to_csv(input_path: str, output_dir: str) -> List[str]:
             df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
             file_size = Path(csv_path).stat().st_size
-            logger.info(f"Converted: {inp.name} [sheet: {sheet_name}] → {csv_filename} ({file_size} bytes)")
+            logger.debug(f"Converted: {inp.name} [sheet: {sheet_name}] → {csv_filename} ({file_size} bytes)")
             csv_paths.append(csv_path)
 
         return csv_paths

@@ -108,9 +108,9 @@ def _append_recipients_without_duplicates(mail_item, more_recips: str, recip_typ
                 except Exception as e:
                     logger.warning(f"Error adding recipient {email}: {e}")
             
-            logger.info(f"Appended additional recipients (deduplicated, type={recip_type}): {'; '.join(new_recips)}")
+            logger.debug(f"Appended additional recipients (deduplicated, type={recip_type}): {'; '.join(new_recips)}")
         else:
-            logger.info(f"No additional recipients needed (all already in To/CC).")
+            logger.debug(f"No additional recipients needed (all already in To/CC).")
     except Exception as e:
         logger.warning(f"Failed to append recipients: {e}")
 
@@ -161,13 +161,13 @@ def execute_draft_action(payload: dict):
                         folder = folders.Item(j)
                         if folder.DefaultItemType == 0 and folder.Name.lower() in ["收件箱", "inbox"]:
                             target_folder = folder
-                            logger.info(f"Found target Inbox in store: {store.DisplayName}")
+                            logger.debug(f"Found target Inbox in store: {store.DisplayName}")
                             break
                     if target_folder:
                         break
 
         if not target_folder:
-            logger.info("Using default Inbox folder.")
+            logger.debug("Using default Inbox folder.")
             target_folder = ns.GetDefaultFolder(6) # olFolderInbox
             
         # 确保 message_id 带有 < 和 > 以匹配 Outlook 的 PR_INTERNET_MESSAGE_ID 格式
@@ -182,32 +182,32 @@ def execute_draft_action(payload: dict):
         target_item = None
         if items.Count > 0:
             target_item = items.Item(1)
-            logger.info("Email found by Message ID in Inbox.")
+            logger.debug("Email found by Message ID in Inbox.")
         else:
-            logger.warning("Email not found by Message ID in Inbox. Attempting to search by ConversationID...")
+            logger.debug("Email not found by Message ID in Inbox. Attempting to search by ConversationID...")
             conv_query = f"@SQL=\"http://schemas.microsoft.com/mapi/proptag/0x71CA0102\" = '{thread_id}'"
             conv_items = target_folder.Items.Restrict(conv_query)
             if conv_items.Count > 0:
                 target_item = conv_items.Item(conv_items.Count)
-                logger.info("Email found by Thread ID in Inbox.")
+                logger.debug("Email found by Thread ID in Inbox.")
             else:
-                logger.info("Email not found in Inbox. Quickly checking Sent Items...")
+                logger.debug("Email not found in Inbox. Quickly checking Sent Items...")
                 try:
                     sent_folder = ns.GetDefaultFolder(5) # olFolderSentMail
                     sent_items = sent_folder.Items.Restrict(query)
                     if sent_items.Count > 0:
                         target_item = sent_items.Item(1)
-                        logger.info("Email found by Message ID in Sent Items.")
+                        logger.debug("Email found by Message ID in Sent Items.")
                     else:
                         sent_conv_items = sent_folder.Items.Restrict(conv_query)
                         if sent_conv_items.Count > 0:
                             target_item = sent_conv_items.Item(sent_conv_items.Count)
-                            logger.info("Email found by Thread ID in Sent Items.")
+                            logger.debug("Email found by Thread ID in Sent Items.")
                 except Exception as e:
                     logger.error(f"Error checking Sent Items: {e}")
                     
                 if not target_item:
-                    logger.info("Email not found in Inbox or Sent Items, searching all folders in the account (this may take a while)...")
+                    logger.debug("Email not found in Inbox or Sent Items, searching all folders in the account...")
                 def search_folder(folder):
                     try:
                         fitems = folder.Items
@@ -223,7 +223,7 @@ def execute_draft_action(payload: dict):
                 
                 if target_folder and target_folder.Parent:
                     target_item = search_folder(target_folder.Parent)
-                    if target_item: logger.info("Email found in another folder.")
+                    if target_item: logger.debug("Email found in another folder.")
 
         if not target_item:
             logger.error("Could not find the corresponding email in any folder.")
@@ -232,7 +232,7 @@ def execute_draft_action(payload: dict):
         try:
             eid = target_item.EntryID
             target_item = ns.GetItemFromID(eid)
-            logger.info(f"Re-fetched item by EntryID.")
+            logger.debug("Re-fetched item by EntryID.")
         except Exception as e:
             logger.warning(f"Failed to re-fetch item by EntryID: {e}")
 
@@ -243,19 +243,19 @@ def execute_draft_action(payload: dict):
         
         if final_action == "forward":
             try:
-                logger.info("Calling target_item.Forward()...")
+                logger.debug("Calling target_item.Forward()...")
                 reply = target_item.Forward()
             except Exception as e:
                 logger.warning(f"Forward() failed with exception: {e}")
         elif final_action == "reply":
             try:
-                logger.info("Calling target_item.Reply()...")
+                logger.debug("Calling target_item.Reply()...")
                 reply = target_item.Reply()
             except Exception as e:
                 logger.warning(f"Reply() failed with exception: {e}")
         else: # "reply_all" or "save"
             try:
-                logger.info("Calling target_item.ReplyAll()...")
+                logger.debug("Calling target_item.ReplyAll()...")
                 reply = target_item.ReplyAll()
             except Exception as e:
                 logger.warning(f"ReplyAll() failed with exception: {e}")
@@ -407,7 +407,7 @@ def _execute_new_mail(payload: dict, draft_only: bool = False):
         # Set plain text body
         if email_body:
             mail.Body = email_body
-            logger.info(f"[NewMail] Set Body ({len(email_body)} chars)")
+            logger.debug(f"[NewMail] Set Body ({len(email_body)} chars)")
         
         # Add CC recipients (with dedup)
         if cc_more:

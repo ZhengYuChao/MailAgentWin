@@ -76,11 +76,6 @@ class WindowsWatcher:
                     continue
 
                 if task.type == TaskType.MAIL_SYNC and len(self.background_tasks) >= 3:
-                    # 由于我们主要是用 Semaphore 限制 MAIL_SYNC，但 asyncio.Semaphore 在任务 yield 之前
-                    # 并没有真正 lock，这导致瞬间出队大量任务，破坏了优先级队列的设计。
-                    # 这里直接通过限制 background_tasks 中 MAIL_SYNC 相关的任务数，
-                    # 保证优先级队列能够真正发挥作用。
-                    
                     # 统计正在执行的 MAIL_SYNC 任务数
                     sync_tasks = getattr(self, "_active_sync_tasks", 0)
                     if sync_tasks >= 3:
@@ -89,7 +84,7 @@ class WindowsWatcher:
                     
                 # 确认可以处理，正式出队
                 task = global_task_pool.get_task_nowait()
-                logger.info(f"📥 Dequeued task: {task.type.name} (Priority {task.priority_level})")
+                logger.debug(f"📥 Dequeued task: {task.type.name} (Priority {task.priority_level})")
                 
                 if task.type == TaskType.MAIL_SYNC:
                     self._active_sync_tasks = getattr(self, "_active_sync_tasks", 0) + 1
@@ -132,14 +127,14 @@ class WindowsWatcher:
         import time as _time
         _sync_start = _time.time()
         _short_eid = entry_id[:32]
-        logger.info(f"🔍 [DEDUP-TRACE] ===== START process_mail_sync entry_id={_short_eid} =====")
+        logger.debug(f"[DEDUP-TRACE] ===== START process_mail_sync entry_id={_short_eid} =====")
 
         # === Layer 1: Atomic SQLite claim ===
         claimed = self.sync_store.try_claim(entry_id)
         if not claimed:
-            logger.info(f"⏭️ [DEDUP-L1] Entry already claimed/synced: {_short_eid}")
+            logger.debug(f"[DEDUP-L1] Entry already claimed/synced: {_short_eid}")
             return
-        logger.info(f"✅ [DEDUP-L1] Claimed entry_id={_short_eid} (new claim)")
+        logger.debug(f"[DEDUP-L1] Claimed entry_id={_short_eid} (new claim)")
 
         fetched = self.arm.fetch_by_entry_id(entry_id, store_id)
         if not fetched:
@@ -147,9 +142,7 @@ class WindowsWatcher:
             self.sync_store.release_claim(entry_id)
             return
 
-        logger.info(f"📧 [DEDUP-TRACE] Fetched email: subject='{fetched.subject[:60]}', "
-                    f"message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}, "
-                    f"entry_id={_short_eid}, mailbox={fetched.mailbox}")
+        logger.info(f"📧 Processing email: '{fetched.subject}' (from: {fetched.from_name or fetched.from_email}, mailbox: {fetched.mailbox})")
 
         msg_lock = None
         if fetched.message_id:
@@ -161,16 +154,15 @@ class WindowsWatcher:
             if fetched.message_id:
                 existing = self.sync_store.get_by_message_id(fetched.message_id)
                 if existing and existing.get('entry_id') != entry_id:
-                    logger.info(f"⏭️ [DEDUP-L2] Email already synced under different EntryID "
-                                f"(Message-ID: {fetched.message_id[:60]})")
+                    logger.info(f"⏭️ Skipping duplicate email: '{fetched.subject}'")
                     self.sync_store.link_entry_id(entry_id, existing)
                     return
                 elif existing:
-                    logger.info(f"ℹ️ [DEDUP-L2] Same entry_id found in SyncStore")
+                    logger.debug(f"[DEDUP-L2] Same entry_id found in SyncStore")
                 else:
-                    logger.info(f"✅ [DEDUP-L2] Message-ID not in SyncStore, proceeding.")
+                    logger.debug(f"[DEDUP-L2] Message-ID not in SyncStore, proceeding.")
             else:
-                logger.warning(f"⚠️ [DEDUP-L2] No Message-ID for entry_id={_short_eid} — L2 skipped")
+                logger.debug(f"[DEDUP-L2] No Message-ID for entry_id={_short_eid} — L2 skipped")
 
             email = Email(
                 message_id=fetched.message_id,
@@ -221,7 +213,8 @@ class WindowsWatcher:
                     cal_sync = NotionCalendarSync()
                     calendar_event = ical_parser.to_calendar_event(meeting_invite)
                     calendar_page_id = await cal_sync.sync_event(calendar_event, sequence=meeting_invite.sequence)
-                    logger.info(f"📅 Synced meeting invite to calendar: {calendar_page_id}")
+                    if calendar_page_id:
+                        logger.info(f"📅 Synced meeting invite to calendar: {calendar_page_id}")
                     await cal_sync.close()
                 except Exception as ce:
                     logger.warning(f"Failed to sync calendar invite: {ce}")
@@ -229,7 +222,7 @@ class WindowsWatcher:
             parent_page_url = find_parent_in_db(fetched.conversation_index, self.sync_store)
             
             # === Layer 3: Notion-level dedup (check_page_exists inside create_email_page_v2) ===
-            logger.info(f"🔄 [DEDUP-L3] Calling create_email_page_v2 for message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}")
+            logger.debug(f"[DEDUP-L3] Calling create_email_page_v2 for message_id={fetched.message_id[:60] if fetched.message_id else 'NONE'}")
             page_id = await self.notion_sync.create_email_page_v2(
                 email, 
                 calendar_page_id=calendar_page_id, 
@@ -250,8 +243,7 @@ class WindowsWatcher:
                     notion_page_id=page_id,
                     parent_page_url=parent_page_url or ""
                 )
-                logger.info(f"💾 [DEDUP-TRACE] Saved sync record: entry_id={_short_eid}, "
-                            f"notion_page_id={page_id}")
+                logger.debug(f"[DEDUP-TRACE] Saved sync record: entry_id={_short_eid}, notion_page_id={page_id}")
                 
                 if fetched.mailbox == "Inbox":
                     await self.feishu.notify_important_email({
@@ -266,21 +258,19 @@ class WindowsWatcher:
                         "ai_summary": email.content[:200] + "..."
                     })
                     
-                logger.info(f"✅ [DEDUP-TRACE] Successfully uploaded to Notion: '{email.subject[:50]}' "
-                            f"(entry={_short_eid}, page_id={page_id}, elapsed={_elapsed:.1f}s)")
+                logger.info(f"✅ Synced email to Notion: '{email.subject}' ({_elapsed:.1f}s)")
                 
                 self.arm.mark_as_read(entry_id)
                 
                 if trigger_ai:
                     self._notify_ai_trigger()
             else:
-                logger.warning(f"⚠️ [DEDUP-L3] create_email_page_v2 returned None "
-                               f"(likely already exists in Notion). entry_id={_short_eid}")
+                logger.debug(f"[DEDUP-L3] create_email_page_v2 returned None for entry_id={_short_eid}")
                 self.sync_store.release_claim(entry_id)
 
         except Exception as e:
             self.sync_store.release_claim(entry_id)
-            logger.error(f"❌ [DEDUP-TRACE] Failed to sync email: entry_id={_short_eid}, error={e}")
+            logger.error(f"❌ Failed to sync email '{fetched.subject if fetched else _short_eid}': {e}")
         finally:
             if msg_lock:
                 msg_lock.release()

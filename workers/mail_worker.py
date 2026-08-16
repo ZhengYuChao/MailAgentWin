@@ -18,10 +18,12 @@ from loguru import logger
 
 def _setup_logger():
     """配置 MailWorker 进程的日志"""
+    from src.config import config
     logger.remove()
+    log_level = getattr(config, "log_level", "INFO").upper()
     fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | [MailWorker] {message}"
-    logger.add(sys.stderr, level="INFO", format=fmt)
-    logger.add("logs/mailagent.log", rotation="10 MB", level="DEBUG",
+    logger.add(sys.stderr, level=log_level, format=fmt)
+    logger.add("logs/mailagent.log", rotation="10 MB", level=log_level,
                encoding="utf-8", format=fmt, enqueue=True)
 
 

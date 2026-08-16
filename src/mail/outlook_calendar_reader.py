@@ -128,8 +128,8 @@ class OutlookCalendarReader:
                     subject = getattr(item, "Subject", "<unknown>")
                     logger.debug(f"Failed to convert calendar item '{subject}': {e}")
 
-            logger.info(f"📅 Read {count} calendar events from Outlook "
-                        f"({start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')})")
+            logger.debug(f"Read {count} calendar events from Outlook "
+                         f"({start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')})")
 
         except Exception as e:
             logger.error(f"Failed to read calendar items: {e}")
@@ -151,8 +151,8 @@ class OutlookCalendarReader:
                         folder = folders.Item(j)
                         # DefaultItemType = 1 表示 olAppointmentItem（日历）
                         if folder.DefaultItemType == 1:
-                            logger.info(f"📍 Found calendar folder: '{folder.Name}' "
-                                        f"in store '{store.DisplayName}'")
+                            logger.debug(f"Found calendar folder: '{folder.Name}' "
+                                         f"in store '{store.DisplayName}'")
                             return folder
         except Exception as e:
             logger.warning(f"Error searching for calendar folder in account: {e}")
@@ -160,7 +160,7 @@ class OutlookCalendarReader:
         # Fallback: 默认日历
         try:
             folder = ns.GetDefaultFolder(OL_FOLDER_CALENDAR)
-            logger.info(f"📍 Using default calendar folder: '{folder.Name}'")
+            logger.debug(f"Using default calendar folder: '{folder.Name}'")
             return folder
         except Exception as e:
             logger.error(f"Failed to get default calendar folder: {e}")

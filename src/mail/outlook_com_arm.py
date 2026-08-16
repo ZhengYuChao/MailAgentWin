@@ -104,7 +104,7 @@ class OutlookComArm:
         from src.config import config
         target_account = config.mail_account_name
         
-        logger.info(f"Searching for account containing: '{target_account}'...")
+        logger.debug(f"Searching for account containing: '{target_account}'...")
         
         try:
             stores = self.ns.Stores
@@ -113,7 +113,7 @@ class OutlookComArm:
                 store_name = store.DisplayName
                 
                 if target_account.lower() in store_name.lower():
-                    logger.info(f"📍 Found matching store: '{store_name}'")
+                    logger.debug(f"Found matching store: '{store_name}'")
                     root = store.GetRootFolder()
                     sid = store.StoreID # 获取 StoreID
                     
@@ -173,7 +173,7 @@ class OutlookComArm:
                 if getattr(item, "UnRead", False):
                     item.UnRead = False
                     item.Save()
-                    logger.info(f"Marked email as read: {entry_id[:16]}")
+                    logger.debug(f"Marked email as read: {entry_id[:16]}")
             except Exception as e:
                 logger.error(f"Failed to mark email as read: {e}")
 
@@ -297,7 +297,7 @@ class OutlookComArm:
                 store_id = folder.Store.StoreID
             except Exception:
                 store_id = None
-            logger.info(f"📂 Scanning folder: '{folder.Name}'...")
+            logger.debug(f"Scanning folder: '{folder.Name}'...")
         except Exception as e:
             logger.error(f"Failed to access folder for scan: {e}")
             return []
@@ -349,7 +349,7 @@ class OutlookComArm:
                 if limit and len(results) >= limit: break
             
             if results:
-                logger.info(f"✅ Fast scan complete: found {len(results)} items")
+                logger.debug(f"Fast scan complete: found {len(results)} items")
                 return results
         except Exception as e:
             logger.warning(f"Fast scan failed ({e}), falling back to legacy...")
@@ -376,7 +376,7 @@ class OutlookComArm:
                     else:
                         results.append((item.EntryID, store_id))
                     if i % step == 0:
-                        logger.info(f"  ... collecting IDs: {i}/{count}")
+                        logger.debug(f"  ... collecting IDs: {i}/{count}")
                     if limit and len(results) >= limit: break
                 except Exception: continue
         

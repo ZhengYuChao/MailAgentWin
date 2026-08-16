@@ -40,7 +40,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         
         # ── 1. Host Validation ────────────────────────────────────────────────
         host_header = self.headers.get('Host', '')
-        logger.info(f"👉 Received incoming request from {client_ip}:{client_port} | Host: {host_header}")
+        logger.debug(f"Received incoming request from {client_ip}:{client_port} | Host: {host_header}")
         is_local = "localhost" in host_header or "127.0.0.1" in host_header
         
         # Check against the allowed host set by tunnel manager
@@ -77,7 +77,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # ── 3. Payload Validation ──────────────────────────────────────────────
         try:
             data = json.loads(body)
-            logger.info(f"📦 Raw Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
+            logger.debug(f"Raw Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
         except json.JSONDecodeError as e:
             logger.error(f"❌ Invalid JSON data: {e}")
             self.send_response(400)
@@ -102,10 +102,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             is_new_mail = False
             if clean_received_id == expected_db_id:
-                logger.info(f"✅ Database ID validated (email sync DB): {clean_received_id}")
+                logger.debug(f"Database ID validated (email sync DB): {clean_received_id}")
             elif new_mail_db_id and clean_received_id == new_mail_db_id:
                 is_new_mail = True
-                logger.info(f"✅ Database ID validated (new mail DB): {clean_received_id}")
+                logger.debug(f"Database ID validated (new mail DB): {clean_received_id}")
             else:
                 logger.error(f"⛔ Database ID mismatch! Expected: {expected_db_id} or {new_mail_db_id}, Received: {clean_received_id}")
                 self.send_response(403)

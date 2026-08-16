@@ -100,14 +100,13 @@ class NotionCalendarSync:
                     return page_id
 
                 # 更新已有页面
-                logger.info(f"🔄 Updating calendar event: '{event.title[:50]}' (page_id={page_id})")
+                logger.debug(f"Updating calendar event: '{event.title[:50]}' (page_id={page_id})")
                 properties = self._build_properties(event, email_page_id, sequence, existing)
                 await self.client.client.pages.update(page_id=page_id, properties=properties)
-                logger.info(f"✅ Updated calendar event: '{event.title[:50]}'")
+                logger.debug(f"Updated calendar event: '{event.title[:50]}'")
                 return page_id
             else:
                 # 创建新页面
-                logger.info(f"🆕 Creating calendar event: '{event.title[:50]}'")
                 properties = self._build_properties(event, email_page_id, sequence)
                 ds_id = await self._get_ds_id()
 
@@ -118,7 +117,7 @@ class NotionCalendarSync:
                     icon=icon,
                 )
                 page_id = page["id"]
-                logger.info(f"✅ Created calendar event: '{event.title[:50]}' (page_id={page_id})")
+                logger.info(f"📅 Created calendar event: '{event.title[:50]}'")
                 return page_id
 
         except Exception as e:

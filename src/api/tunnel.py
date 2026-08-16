@@ -17,7 +17,7 @@ class TunnelManager:
         self.allowed_host_keyword = "localhost"
 
     def ensure_ngrok_running(self) -> str:
-        logger.info("🌐 Checking ngrok status...")
+        logger.debug("Checking ngrok status...")
         ngrok_api_url = "http://127.0.0.1:4040/api/tunnels"
         target_addr = f"localhost:{self.port}"
         
@@ -31,7 +31,7 @@ class TunnelManager:
                         logger.info(f"✅ ngrok is already running. Public URL: {public_url}")
                         return public_url
         except URLError:
-            logger.info("📡 ngrok API not reachable. Attempting to start ngrok...")
+            logger.debug("ngrok API not reachable. Attempting to start ngrok...")
 
         try:
             self.ngrok_process = subprocess.Popen(
@@ -42,7 +42,7 @@ class TunnelManager:
             )
             logger.info(f"🚀 Started ngrok http {self.port} (PID: {self.ngrok_process.pid})")
             
-            logger.info("⏳ Waiting for ngrok to initialize...")
+            logger.debug("Waiting for ngrok to initialize...")
             for _ in range(10):
                 time.sleep(1)
                 try:
@@ -60,7 +60,7 @@ class TunnelManager:
         return ""
 
     def ensure_cloudflare_running(self) -> str:
-        logger.info("🌐 Checking cloudflared status...")
+        logger.debug("Checking cloudflared status...")
         try:
             import tempfile
             import re
@@ -80,7 +80,7 @@ class TunnelManager:
             )
             logger.info(f"🚀 Started cloudflared quick tunnel (PID: {self.cloudflared_process.pid})")
             
-            logger.info("⏳ Waiting for cloudflared tunnel to initialize...")
+            logger.debug("Waiting for cloudflared tunnel to initialize...")
             for _ in range(15):
                 time.sleep(1)
                 if os.path.exists(log_file_path):

@@ -84,7 +84,7 @@ async def start_calendar_sync(shutdown_event: MPEvent):
                             consecutive_failures += 1
                             
                     if success_count > 0:
-                        logger.info(f"✅ Calendar sync loop complete: {success_count} events synced.")
+                        logger.debug(f"Calendar sync loop complete: {success_count} events synced.")
 
             except Exception as e:
                 logger.error(f"❌ Error in calendar sync loop: {e}")
