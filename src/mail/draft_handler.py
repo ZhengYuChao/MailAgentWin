@@ -411,7 +411,7 @@ def _execute_new_mail(payload: dict, draft_only: bool = False):
         
         # Add CC recipients (with dedup)
         if cc_more:
-            _append_cc_without_duplicates(mail, cc_more)
+            _append_recipients_without_duplicates(mail, cc_more, 2)
 
         # Send/Save the email (with configurable timeout, same pattern as existing flow)
         publish_timeout = config.outlook_publish_timeout_sec

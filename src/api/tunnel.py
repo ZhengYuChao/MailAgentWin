@@ -16,6 +16,23 @@ class TunnelManager:
         self.cloudflared_process = None
         self.allowed_host_keyword = "localhost"
 
+    def _test_public_url(self, url: str) -> bool:
+        """测试公网 URL 是否可达。本地 API Server 未启动时预期返回 HTTPError(5xx)"""
+        logger.debug(f"Testing public URL reachability: {url}")
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'MailAgent/1.0'})
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+            logger.info("✅ Tunnel public endpoint is reachable (HTTP 200).")
+            return True
+        except urllib.error.HTTPError as e:
+            # 只要是 HTTPError，说明 ngrok 边缘节点接收了请求并返回了错误（如 502），隧道公网连通性没问题
+            logger.info(f"✅ Tunnel public endpoint is reachable (ngrok responded HTTP {e.code}).")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Tunnel public endpoint test failed: {e}")
+            return False
+
     def ensure_ngrok_running(self) -> str:
         logger.debug("Checking ngrok status...")
         ngrok_api_url = "http://127.0.0.1:4040/api/tunnels"
@@ -28,8 +45,15 @@ class TunnelManager:
                     addr = tunnel.get("config", {}).get("addr", "")
                     if target_addr in addr:
                         public_url = tunnel.get("public_url")
-                        logger.info(f"✅ ngrok is already running. Public URL: {public_url}")
-                        return public_url
+                        logger.info(f"ℹ️ Found existing ngrok tunnel: {public_url}")
+                        
+                        if self._test_public_url(public_url):
+                            return public_url
+                        else:
+                            logger.warning("⚠️ Existing ngrok tunnel is dead. Killing old ngrok process...")
+                            subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"], capture_output=True)
+                            time.sleep(1)
+                            break
         except URLError:
             logger.debug("ngrok API not reachable. Attempting to start ngrok...")
 
@@ -51,6 +75,7 @@ class TunnelManager:
                         if data.get("tunnels"):
                             public_url = data["tunnels"][0].get("public_url")
                             logger.info(f"✅ ngrok started successfully. Public URL: {public_url}")
+                            self._test_public_url(public_url)
                             return public_url
                 except URLError:
                     continue

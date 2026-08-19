@@ -265,7 +265,7 @@ class AIController:
             
             if action == "scheduled_daily_sync":
                 await self._click_new_chat()
-                schedule_file = os.path.join(script_dir, "prompt_schedule.txt")
+                schedule_file = os.path.join(script_dir, "prompt_daily.txt")
                 if os.path.exists(schedule_file):
                     prompt_file = schedule_file
                 
