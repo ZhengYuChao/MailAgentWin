@@ -91,9 +91,16 @@ class NotionCalendarSync:
                 page_id = existing["id"]
                 # 检查是否需要更新
                 existing_seq = self._get_existing_sequence(existing)
+                existing_last_mod = self._get_existing_last_modified(existing)
+                
+                is_up_to_date = False
                 if sequence > 0 and existing_seq >= sequence:
-                    logger.debug(f"Calendar event '{event.title[:40]}' already up-to-date "
-                                 f"(seq {existing_seq} >= {sequence})")
+                    is_up_to_date = True
+                elif event.last_modified and existing_last_mod and existing_last_mod >= event.last_modified:
+                    is_up_to_date = True
+                    
+                if is_up_to_date:
+                    logger.debug(f"Calendar event '{event.title[:40]}' already up-to-date")
                     # 即使不更新属性，也可能需要补充 Email Inbox relation
                     if email_page_id:
                         await self._link_email(page_id, email_page_id, existing)
@@ -352,6 +359,16 @@ class NotionCalendarSync:
             return page.get("properties", {}).get("Sequence", {}).get("number", 0) or 0
         except Exception:
             return 0
+
+    @staticmethod
+    def _get_existing_last_modified(page: Dict) -> Optional[datetime]:
+        """从已有 Notion 页面中提取 Last Modified 值"""
+        try:
+            date_str = page.get("properties", {}).get("Last Modified", {}).get("date", {}).get("start")
+            if date_str:
+                return datetime.fromisoformat(date_str)
+        except Exception:
+            return None
 
     @staticmethod
     def _infer_meeting_type(event: CalendarEvent) -> Optional[str]:

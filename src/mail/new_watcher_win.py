@@ -260,7 +260,7 @@ class WindowsWatcher:
                     
                 logger.info(f"✅ Synced email to Notion: '{email.subject}' ({_elapsed:.1f}s)")
                 
-                self.arm.mark_as_read(entry_id)
+                self.arm.mark_as_read(entry_id, store_id=store_id)
                 
                 if trigger_ai:
                     self._notify_ai_trigger()

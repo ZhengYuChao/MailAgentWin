@@ -140,6 +140,52 @@ class TunnelManager:
             specific_host = public_url.split("//")[-1]
             self.allowed_host_keyword = specific_host
             logger.info(f"🔒 Security: Only accepting requests with Host: '{self.allowed_host_keyword}'")
+            
+            def self_check():
+                import time
+                import urllib.request
+                import json
+                
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    time.sleep(3)
+                    logger.info(f"🔍 Running tunnel self-check (Attempt {attempt}/{max_retries})...")
+                    try:
+                        req = urllib.request.Request(f"{public_url}?action=ping", method="POST")
+                        req.add_header("Content-Type", "application/json")
+                        req.add_header("ngrok-skip-browser-warning", "1")
+                        req.add_header("User-Agent", "Mozilla/5.0")
+                        data = json.dumps({"type": "ping"}).encode("utf-8")
+                        
+                        import ssl
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        
+                        with urllib.request.urlopen(req, data=data, timeout=10, context=ctx) as resp:
+                            if resp.status == 200:
+                                logger.info("✅ Tunnel self-check passed. Webhook is reachable from public internet.")
+                                return
+                            else:
+                                logger.warning(f"⚠️ Tunnel self-check returned status: {resp.status}")
+                    except urllib.error.HTTPError as e:
+                        err_body = e.read().decode('utf-8', errors='ignore')
+                        logger.error(f"❌ Tunnel self-check failed on attempt {attempt}: HTTP {e.code} - {err_body[:200]}")
+                        if "ERR_NGROK_3200" in err_body or "ERR_NGROK_" in err_body:
+                            logger.error("⚠️ Detected ngrok specific error, breaking retries early to restart tunnel.")
+                            break
+                    except Exception as e:
+                        logger.error(f"❌ Tunnel self-check failed on attempt {attempt}: {e}")
+                
+                logger.error("❌ Tunnel self-check completely failed. Restarting tunnel...")
+                self.stop_all()
+                import time
+                time.sleep(2)
+                self.init_tunnel()
+                    
+            import threading
+            threading.Thread(target=self_check, daemon=True).start()
+
             return self.allowed_host_keyword
             
         return "localhost"

@@ -85,6 +85,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Invalid JSON")
             return
             
+        if data.get("type") == "ping" or url_action == "ping":
+            logger.info("🏓 Ping received, tunnel self-check passed. Returning 200 OK.")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"pong")
+            return
+            
         action_id = data.get("source", {}).get("action_id", "N/A")
         logger.info(f"📥 Received Webhook from {client_ip}:{client_port}. action_id: {action_id}")
         
