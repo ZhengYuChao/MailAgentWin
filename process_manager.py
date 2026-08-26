@@ -17,7 +17,7 @@ def _setup_supervisor_logger():
     logger.remove()
     log_level = getattr(config, "log_level", "INFO").upper()
     fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | [Supervisor] {message}"
-    logger.add(sys.stderr, level=log_level, format=fmt)
+    logger.add(sys.stderr, level=log_level, format=fmt) if sys.stderr else None
     logger.add("logs/mailagent.log", rotation="10 MB", level=log_level,
                encoding="utf-8", format=fmt, enqueue=True)
 

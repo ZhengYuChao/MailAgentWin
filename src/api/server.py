@@ -39,14 +39,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
         url_action = query_params.get("action", [""])[0].lower()
         
         # ── 1. Host Validation ────────────────────────────────────────────────
-        host_header = self.headers.get('Host', '')
+        host_header = self.headers.get('Host', '').split(':')[0].strip().lower()
         logger.debug(f"Received incoming request from {client_ip}:{client_port} | Host: {host_header}")
-        is_local = "localhost" in host_header or "127.0.0.1" in host_header
         
-        # Check against the allowed host set by tunnel manager
-        allowed_host = global_tunnel_manager.allowed_host_keyword
-        if not is_local and allowed_host not in host_header:
-            logger.warning(f"⛔ Rejected – Host '{host_header}' does not contain '{allowed_host}'.")
+        allowed_hosts = [h.lower() for h in global_tunnel_manager.get_allowed_hosts()]
+        is_allowed = any(ah in host_header for ah in allowed_hosts)
+        
+        if not is_allowed:
+            logger.warning(f"⛔ Rejected – Host '{host_header}' does not match allowed hosts: {allowed_hosts}")
             self.send_response(403)
             self.end_headers()
             self.wfile.write(b"Forbidden")

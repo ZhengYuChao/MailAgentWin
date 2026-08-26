@@ -24,6 +24,7 @@ data/*.db
 data/*.bak
 data/*.db.*
 data/*.db-journal
+data/MailAgent/
 
 # Logs and screenshots
 logs/
@@ -37,3 +38,10 @@ scratch/webhook_history.jsonl
 scratch/*.json
 scratch/*.jsonl
 scratch/*.html
+
+# Pyinstaller artifacts
+build/
+dist/
+
+# User configuration
+config.json

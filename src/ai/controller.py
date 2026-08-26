@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import random
+from pathlib import Path
 from queue import Empty as QueueEmpty
 from loguru import logger
 from playwright_stealth import Stealth
@@ -77,11 +78,19 @@ class AIController:
                 )
 
                 script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                auth_state_path = os.path.join(script_dir, "notion_auth.json")
-                user_agent_path = os.path.join(script_dir, "user_agent.txt")
+                from src.setup.persistence import get_browser_dir
+                browser_dir = get_browser_dir()
+
+                auth_state_path = browser_dir / "notion_auth.json"
+                if not auth_state_path.exists():
+                    auth_state_path = Path(os.path.join(script_dir, "notion_auth.json"))
+
+                user_agent_path = browser_dir / "user_agent.txt"
+                if not user_agent_path.exists():
+                    user_agent_path = Path(os.path.join(script_dir, "user_agent.txt"))
 
                 if not os.path.exists(auth_state_path):
-                    logger.error(f"❌ Auth state file does not exist: {auth_state_path}. Please run python notion_auth.py to login first!")
+                    logger.error(f"❌ Auth state file does not exist: {auth_state_path}. Please sign in via Settings or Setup wizard first!")
                     await self.close()
                     return False
 
@@ -108,8 +117,13 @@ class AIController:
 
                 logger.info(f"🌐 Accessing Notion page via headless browser: {page_url}")
                 await self.page.goto(page_url, wait_until="load")
-                logger.info("✅ Initial page loaded, waiting 10 seconds to ensure routing and AI panel are fully initialized...")
-                await asyncio.sleep(10)
+                logger.info("✅ Initial page loaded, waiting 8 seconds to ensure routing and AI panel are fully initialized...")
+                await asyncio.sleep(8)
+                # Proactively discover and sync available AI models from Notion UI on startup
+                try:
+                    await self.sync_available_models()
+                except Exception as sync_ex:
+                    logger.warning(f"⚠️ Model discovery on browser startup encountered issue: {sync_ex}")
                 return True
 
             except Exception as e:
@@ -220,7 +234,6 @@ class AIController:
                 logger.error(f"Error in debounce loop: {e}")
                 await asyncio.sleep(5)
 
-
     async def _click_new_chat(self):
         """点击左下角的 New Chat 按钮启动独立对话"""
         try:
@@ -230,7 +243,6 @@ class AIController:
             new_chat_btn = self.page.locator("div[role='button']:has-text('New chat'), button:has-text('New chat'), [aria-label='New chat']").first
             if await new_chat_btn.is_visible(timeout=5000):
                 await new_chat_btn.click(delay=100)
-                import asyncio, random
                 await asyncio.sleep(random.uniform(1.5, 2.5))
                 return True
             else:
@@ -238,6 +250,238 @@ class AIController:
                 return False
         except Exception as e:
             logger.warning(f"⚠️ Failed to click 'New chat': {e}")
+            return False
+
+    async def _dismiss_desktop_app_prompt(self):
+        """关闭或隐藏 'Open in Notion's desktop app' 等阻挡弹窗，不破坏 overlay-container 根节点"""
+        if not self.page:
+            return
+        try:
+            await self.page.evaluate("""() => {
+                const divs = document.querySelectorAll('.notion-overlay-container > div');
+                divs.forEach(d => {
+                    if (d.innerText && (d.innerText.includes('desktop app') || d.innerText.includes('Open in'))) {
+                        d.style.display = 'none';
+                    }
+                });
+            }""")
+        except Exception:
+            pass
+
+    async def _get_model_selector_button(self):
+        """寻找 Notion AI 聊天输入框底部的模型选择按钮"""
+        if not self.page:
+            return None
+        try:
+            # 1. 优先使用专属属性 data-testid
+            btn = self.page.locator('[data-testid="unified-chat-model-button"]').first
+            if await btn.count() > 0 and await btn.is_visible(timeout=1000):
+                return btn
+            
+            # 2. 回退：寻找带有 aria-haspopup="dialog" 的按钮
+            dialog_btn = self.page.locator('div[role="button"][aria-haspopup="dialog"]').first
+            if await dialog_btn.count() > 0 and await dialog_btn.is_visible(timeout=1000):
+                return dialog_btn
+                
+            # 3. 回退：在工具栏中寻找文本匹配模型关键字的小按钮
+            import re
+            triggers = self.page.locator("[role='button'], button, [aria-haspopup]").filter(
+                has_text=re.compile(r"Auto|Sonnet|Claude|GPT|Gemini|Opus|Kimi|Grok|DeepSeek|GLM", re.I)
+            )
+            count = await triggers.count()
+            for i in range(count):
+                t = triggers.nth(i)
+                if await t.is_visible(timeout=500):
+                    box = await t.bounding_box()
+                    if box and box['width'] < 250 and box['height'] < 60:
+                        return t
+        except Exception as e:
+            logger.debug(f"Error finding model selector button: {e}")
+        return None
+
+    async def sync_available_models(self) -> list[str]:
+        """
+        每次启动/重连无头浏览器时自动执行：
+        在 Notion AI 界面展开模型选择菜单，实时提取工作区支持的全部可用模型（含 Older models），
+        并将提取到的模型列表持久化保存至 config.json，供 Settings 下拉列表可选。
+        """
+        if not self.page:
+            logger.warning("Cannot sync available models: browser page not initialized.")
+            return []
+
+        logger.info("🔍 Proactively discovering available Notion AI models from page interface...")
+        extracted_models = []
+
+        try:
+            await self._dismiss_desktop_app_prompt()
+
+            # 先聚焦聊天输入框以激活工具栏状态
+            try:
+                chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
+                if await chat_input.count() > 0:
+                    await chat_input.click(delay=50, timeout=3000)
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # 获取模型选择器按钮
+            btn = await self._get_model_selector_button()
+            if not btn:
+                logger.warning("⚠️ Model selector button not found on Notion AI page.")
+                return []
+
+            # 点击打开模型下拉列表
+            await btn.click(force=True, delay=100)
+            await asyncio.sleep(1.5)
+
+            # 展开 Older models 提取更完整的可用模型
+            try:
+                older_btn = self.page.locator('.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="button"]').filter(has_text='Older models').first
+                if await older_btn.count() > 0 and await older_btn.is_visible(timeout=1500):
+                    await older_btn.scroll_into_view_if_needed()
+                    await older_btn.click(delay=100)
+                    await asyncio.sleep(1.0)
+            except Exception:
+                pass
+
+            # 从弹出菜单中提取所有模型项
+            raw_items = await self.page.evaluate("""() => {
+                const overlay = document.querySelector('.notion-overlay-container');
+                const items = overlay ? overlay.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]') : [];
+                const results = [];
+                items.forEach(el => {
+                    const text = el.innerText || '';
+                    const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
+                    if (lines.length > 0) {
+                        results.push(lines);
+                    }
+                });
+                return results;
+            }""")
+
+            models = []
+            for lines in raw_items:
+                if not lines:
+                    continue
+                first = lines[0]
+                if first.lower() == "older models":
+                    continue
+                if first.lower() == "auto":
+                    if "Auto" not in models:
+                        models.append("Auto")
+                    continue
+                if len(lines) >= 2:
+                    second = lines[1]
+                    if len(second) > 25 or any(second.startswith(w) for w in ["Balances", "Best for", "Fastest", "Most powerful", "Hosted by", "Advanced", "Designed for"]):
+                        name = first
+                    else:
+                        name = f"{first} {second}"
+                else:
+                    name = first
+                if name and name not in models:
+                    models.append(name)
+
+            # 按 Escape 键收起菜单
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+
+            if models:
+                extracted_models = models
+                from src.setup import persistence
+                cfg = persistence.load_config()
+                cfg.available_ai_models = extracted_models
+                persistence.save_config(cfg)
+                from src.config import config as cfg_proxy
+                cfg_proxy.reload()
+                logger.info(f"🤖 Successfully extracted and synced {len(extracted_models)} Notion AI models: {extracted_models}")
+            else:
+                logger.warning("⚠️ No models extracted from Notion AI popup.")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to sync Notion AI models: {e}")
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+        return extracted_models
+
+    async def switch_ai_model(self, target_model_name: str) -> bool:
+        """
+        切换 Notion AI 当前使用的模型。
+        若当前已是目标模型或目标为 'Auto'，则无需切换。
+        """
+        target_model = (target_model_name or "Auto").strip()
+        logger.info(f"🤖 Checking/Switching Notion AI model to: '{target_model}'...")
+
+        try:
+            await self._dismiss_desktop_app_prompt()
+
+            # 聚焦输入框
+            try:
+                chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
+                if await chat_input.count() > 0:
+                    await chat_input.click(delay=50, timeout=3000)
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+            btn = await self._get_model_selector_button()
+            if not btn:
+                logger.warning("⚠️ Model selector button not found, skipping switch.")
+                return False
+
+            current_text = (await btn.inner_text()).strip()
+            if target_model.lower() == current_text.lower() or (target_model.lower() in current_text.lower() and len(target_model) > 3):
+                logger.debug(f"Current model is already '{current_text}', no switch needed.")
+                return True
+
+            # 点击展开菜单
+            await btn.click(force=True, delay=100)
+            await asyncio.sleep(1.0)
+
+            # 在菜单中查找目标模型
+            item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=target_model).first
+            parts = target_model.split()
+            if await item.count() == 0 and len(parts) > 1:
+                item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=parts[0]).filter(has_text=parts[-1]).first
+
+            if await item.count() > 0 and await item.is_visible():
+                await item.click(delay=100)
+                await asyncio.sleep(1.0)
+                logger.info(f"✅ Successfully switched AI model to '{target_model}'.")
+            else:
+                # 尝试展开 Older models 再查找
+                older_btn = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text='Older models').first
+                if await older_btn.count() > 0 and await older_btn.is_visible():
+                    await older_btn.scroll_into_view_if_needed()
+                    await older_btn.click(delay=100)
+                    await asyncio.sleep(1.0)
+
+                    item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=target_model).first
+                    if await item.count() == 0 and len(parts) > 1:
+                        item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=parts[0]).filter(has_text=parts[-1]).first
+
+                    if await item.count() > 0 and await item.is_visible():
+                        await item.click(delay=100)
+                        await asyncio.sleep(1.0)
+                        logger.info(f"✅ Successfully switched AI model to '{target_model}' (from Older models).")
+                    else:
+                        logger.warning(f"⚠️ Target model '{target_model}' not found in menu, keeping current '{current_text}'.")
+                else:
+                    logger.warning(f"⚠️ Target model '{target_model}' not found in menu, keeping current '{current_text}'.")
+
+            # 确保收起菜单
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error switching AI model to '{target_model}': {e}")
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                pass
             return False
 
     async def _do_trigger_ai(self, action: str = None, force_new_chat: bool = False):
@@ -258,388 +502,44 @@ class AIController:
                 if not success or not self.page:
                     return
                 page = self.page
+                # Explicitly click 'New chat' after restarting
+                await self._click_new_chat()
                     
             # 1. 读取 prompt
-            prompt_text = "Summarize this email and suggest a reply."
-            prompt_file = os.path.join(script_dir, "prompt.txt")
-            
             if action == "scheduled_daily_sync":
-                await self._click_new_chat()
-                schedule_file = os.path.join(script_dir, "prompt_daily.txt")
-                if os.path.exists(schedule_file):
-                    prompt_file = schedule_file
-                
-            if os.path.exists(prompt_file):
-                with open(prompt_file, "r", encoding="utf-8") as f:
-                    prompt_text = f.read().strip()
+                # For daily sync, we always want a fresh chat regardless of limits
+                if not force_new_chat:
+                    await self._click_new_chat()
+                prompt_text = (getattr(config, "prompt_daily", "") or "").strip()
+                if not prompt_text:
+                    schedule_file = os.path.join(script_dir, "prompt_daily.txt")
+                    if os.path.exists(schedule_file):
+                        with open(schedule_file, "r", encoding="utf-8") as f:
+                            prompt_text = f.read().strip()
+                if not prompt_text:
+                    prompt_text = "Generate daily email summary."
+            else:
+                prompt_text = (getattr(config, "prompt_default", "") or "").strip()
+                if not prompt_text:
+                    prompt_file = os.path.join(script_dir, "prompt.txt")
+                    if os.path.exists(prompt_file):
+                        with open(prompt_file, "r", encoding="utf-8") as f:
+                            prompt_text = f.read().strip()
+                if not prompt_text:
+                    prompt_text = "Summarize this email and suggest a reply."
                     
-            # 移除可能拦截点击的弹窗 (如 "Open in Notion's desktop app?")
-            # 注意：只移除包含 "desktop app" 等提示文字的弹窗，
-            # 不能移除所有 overlay-container，因为模型选择下拉菜单也使用 overlay 渲染
-            try:
-                removed = await page.evaluate('''() => {
-                    let count = 0;
-                    document.querySelectorAll('.notion-overlay-container').forEach(el => {
-                        const text = el.innerText || '';
-                        if (text.includes('desktop app') || text.includes('Open in')) {
-                            el.remove();
-                            count++;
-                        }
-                    });
-                    return count;
-                }''')
-                if removed > 0:
-                    logger.debug(f"Cleaned up {removed} Notion overlay container(s) with desktop app prompt.")
-            except Exception:
-                pass
+            # 2. 移除可能拦截点击的桌面弹窗
+            await self._dismiss_desktop_app_prompt()
 
-            # 尝试寻找并切换 AI 模型
+            # 3. 寻找并切换 AI 模型
             if action == "scheduled_daily_sync":
-                target_model_name = config.ai_model_daily_summary.strip()
+                target_model_name = (getattr(config, "ai_model_daily_summary", "") or "Auto").strip()
             else:
-                target_model_name = config.ai_model_email_sync.strip()
-                
-            if target_model_name.lower() == "auto":
-                logger.debug("Target AI_MODEL configured as Auto, skipping model switch.")
-            else:
-                try:
-                    logger.debug(f"Attempting to switch AI model to target: {target_model_name}")
-                    
-                    # Notion AI 的模型选择器位于聊天输入框底部工具栏，
-                    # 是一个可点击的小元素，文本内容为当前模型名（如 "Auto"、"Sonnet 5" 等）。
-                    # 使用多种选择器策略来定位：
-                    known_models = ["Auto", "Claude", "GPT", "Sonnet", "Gemini", "o3", "o4-mini", target_model_name]
-                    # 去重并构建选择器
-                    seen = set()
-                    selector_parts = []
-                    for m in known_models:
-                        if m not in seen:
-                            seen.add(m)
-                            # 使用 :has-text() 替代 :text-is() 以支持部分匹配 (如 "Claude 3.5 Sonnet")
-                            # 为了避免匹配到大块文本容器，我们严格限制在 button 和具有 popup 属性等交互元素上
-                            selector_parts.append(f"[role='button']:has-text('{m}')")
-                            selector_parts.append(f"button:has-text('{m}')")
-                            selector_parts.append(f"[aria-haspopup]:has-text('{m}')")
-                            selector_parts.append(f"div[class*='model']:has-text('{m}')")
-                    
-                    full_selector = ", ".join(selector_parts)
-                    all_triggers = page.locator(full_selector)
-                    
-                    # 在所有匹配中找到最小（最精确）的可见元素作为触发器
-                    trigger = None
-                    found = False
-                    best_area = float('inf')
-                    
-                    try:
-                        count = await all_triggers.count()
-                        logger.debug(f"Found {count} potential model selector candidates")
-                        for i in range(count):
-                            candidate = all_triggers.nth(i)
-                            try:
-                                if not await candidate.is_visible(timeout=500):
-                                    continue
-                                box = await candidate.bounding_box()
-                                if not box:
-                                    continue
-                                area = box['width'] * box['height']
-                                text = (await candidate.inner_text()).strip()
-                                tag = await candidate.evaluate("el => el.tagName.toLowerCase()")
-                                cls = await candidate.evaluate("el => (el.className || '').toString().slice(0, 60)")
-                                logger.debug(f"  Candidate[{i}]: tag={tag}, class={cls}, size={box['width']:.0f}x{box['height']:.0f}, text='{text[:30]}'")
-                                # 选最小的可见元素（模型选择器按钮通常很小，< 200x50 像素）
-                                if area < best_area and box['width'] < 300 and box['height'] < 80:
-                                    best_area = area
-                                    trigger = candidate
-                                    found = True
-                            except Exception:
-                                continue
-                    except Exception:
-                        # 回退：使用 .first
-                        trigger = all_triggers.first
-                        try:
-                            found = await trigger.is_visible(timeout=5000)
-                        except Exception:
-                            pass
-                    
-                    if found and trigger:
-                        current_text = await trigger.inner_text()
-                        logger.debug(f"Found model selector, currently showing: '{current_text.strip()}'")
-                        
-                        # 如果当前已经是目标模型，则跳过
-                        if target_model_name.lower() in current_text.strip().lower():
-                            logger.debug(f"Current model is already '{target_model_name}', no switch needed.")
-                        else:
-                            # 点击展开模型下拉菜单 - 尝试多种点击方式
-                            dropdown_opened = False
-                            
-                            # 获取触发器的坐标
-                            trigger_box = await trigger.bounding_box()
-                            
-                            click_strategies = [
-                                "mouse_click",       # 直接用鼠标坐标点击（最可靠）
-                                "playwright_click",  # Playwright 内置 click
-                                "parent_click",      # 点击父元素
-                                "dispatchEvent",     # React 合成事件
-                            ]
-                            
-                            for click_attempt, click_method in enumerate(click_strategies, 1):
-                                logger.debug(f"Clicking model selector (attempt {click_attempt}: {click_method})...")
-                                
-                                try:
-                                    if click_method == "mouse_click" and trigger_box:
-                                        # 直接使用鼠标坐标点击 — 绕过所有 DOM 层级问题
-                                        cx = trigger_box['x'] + trigger_box['width'] / 2
-                                        cy = trigger_box['y'] + trigger_box['height'] / 2
-                                        logger.debug(f"  Mouse clicking at ({cx:.0f}, {cy:.0f})")
-                                        await page.mouse.click(cx, cy, delay=random.randint(50, 150))
-                                    elif click_method == "playwright_click":
-                                        await trigger.click(force=True, delay=random.randint(50, 150))
-                                    elif click_method == "parent_click":
-                                        # 尝试点击父元素（React 事件可能绑定在父级）
-                                        await trigger.evaluate('''el => {
-                                            let p = el.parentElement;
-                                            for (let i = 0; i < 5 && p; i++) {
-                                                p.click();
-                                                p = p.parentElement;
-                                            }
-                                        }''')
-                                    elif click_method == "dispatchEvent":
-                                        # 分发完整的 MouseEvent（支持 React 合成事件系统）
-                                        await trigger.evaluate('''el => {
-                                            const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-                                            for (const evtName of events) {
-                                                const evt = new MouseEvent(evtName, {
-                                                    bubbles: true, cancelable: true, view: window
-                                                });
-                                                el.dispatchEvent(evt);
-                                            }
-                                        }''')
-                                except Exception as e:
-                                    logger.debug(f"  Click method {click_method} raised: {e}")
-                                
-                                await asyncio.sleep(random.uniform(1.5, 2.5))
-                                
-                                # 验证下拉菜单是否真的打开了
-                                popup_info = await page.evaluate('''() => {
-                                    const result = {
-                                        overlay_count: document.querySelectorAll('.notion-overlay-container').length,
-                                        has_model_popup: false,
-                                        popup_source: '',
-                                        dom_debug: ''
-                                    };
-                                    
-                                    const overlays = document.querySelectorAll('.notion-overlay-container');
-                                    for (const o of overlays) {
-                                        const text = o.innerText || '';
-                                        if (text.includes('GPT') || text.includes('Claude') || text.includes('Sonnet') || text.includes('Gemini') || text.includes('Opus') || text.includes('Kimi')) {
-                                            result.has_model_popup = true;
-                                            result.popup_source = 'notion-overlay: ' + text.slice(0, 100);
-                                            return result;
-                                        }
-                                    }
-                                    
-                                    const allElements = document.querySelectorAll('*');
-                                    for (const el of allElements) {
-                                        const style = window.getComputedStyle(el);
-                                        if ((style.position === 'fixed' || style.position === 'absolute') && style.display !== 'none' && style.visibility !== 'hidden') {
-                                            const text = el.innerText || '';
-                                            if (text.length > 10 && text.length < 500 && (text.includes('GPT') || text.includes('Claude') || text.includes('Sonnet') || text.includes('Opus') || text.includes('Kimi'))) {
-                                                result.has_model_popup = true;
-                                                result.popup_source = el.tagName + '.' + (el.className || '').toString().slice(0, 40) + ': ' + text.slice(0, 80);
-                                                return result;
-                                            }
-                                        }
-                                    }
-                                    return result;
-                                }''')
-                                
-                                logger.debug(f"  overlay_count={popup_info['overlay_count']}, has_model_popup={popup_info['has_model_popup']}, source={popup_info.get('popup_source', '')}")
-                                
-                                if popup_info['has_model_popup']:
-                                    dropdown_opened = True
-                                    break
-                                    
-                                # 如果没有打开，按 Escape 清理可能的半开状态，再重试
-                                if click_attempt < len(click_strategies):
-                                    await page.keyboard.press("Escape")
-                                    await asyncio.sleep(0.5)
-                            
-                            # 辅助函数：在页面中查找目标模型菜单项
-                            async def _find_model_item(model_name: str) -> tuple:
-                                """尝试多种策略查找目标模型菜单项，返回 (locator, found_bool)"""
-                                try:
-                                    overlay = page.locator(".notion-overlay-container")
-                                    overlay_count = await overlay.count()
-                                    for oi in range(overlay_count):
-                                        ov = overlay.nth(oi)
-                                        try:
-                                            if not await ov.is_visible(timeout=300):
-                                                continue
-                                            item = ov.get_by_text(model_name, exact=False).first
-                                            if await item.is_visible(timeout=500):
-                                                return item, True
-                                        except Exception:
-                                            continue
-                                except Exception:
-                                    pass
-                                
-                                role_selector = ", ".join([
-                                    f"[role='option']:has-text('{model_name}')",
-                                    f"[role='menuitem']:has-text('{model_name}')",
-                                    f"[role='menuitemradio']:has-text('{model_name}')",
-                                    f"[role='listbox'] >> text='{model_name}'",
-                                ])
-                                item = page.locator(role_selector).first
-                                try:
-                                    if await item.is_visible(timeout=2000):
-                                        return item, True
-                                except Exception:
-                                    pass
-                                
-                                popup_selectors = [
-                                    "div[class*='overlay']",
-                                    "div[class*='popup']",
-                                    "div[class*='dropdown']",
-                                    "div[class*='popover']",
-                                    "div[class*='menu']",
-                                    "div[style*='position: fixed']",
-                                    "div[style*='position: absolute']",
-                                ]
-                                for ps in popup_selectors:
-                                    try:
-                                        containers = page.locator(ps)
-                                        cnt = await containers.count()
-                                        for ci in range(cnt):
-                                            container = containers.nth(ci)
-                                            if await container.is_visible(timeout=300):
-                                                item = container.get_by_text(model_name, exact=False).first
-                                                if await item.is_visible(timeout=300):
-                                                    return item, True
-                                    except Exception:
-                                        continue
-                                
-                                for role in ["option", "menuitem", "menuitemradio"]:
-                                    try:
-                                        item = page.get_by_role(role, name=model_name)
-                                        if await item.first.is_visible(timeout=500):
-                                            return item.first, True
-                                    except Exception:
-                                        continue
-                                
-                                try:
-                                    all_matches = page.get_by_text(model_name, exact=False)
-                                    count = await all_matches.count()
-                                    for i in range(count):
-                                        candidate = all_matches.nth(i)
-                                        try:
-                                            if not await candidate.is_visible(timeout=300):
-                                                continue
-                                            text = (await candidate.inner_text()).strip()
-                                            if len(text) > 80:
-                                                continue
-                                            if model_name.lower() in text.lower():
-                                                return candidate, True
-                                        except Exception:
-                                            continue
-                                except Exception:
-                                    pass
-                                
-                                try:
-                                    clicked = await page.evaluate(f'''(targetText) => {{
-                                        const overlays = document.querySelectorAll('.notion-overlay-container');
-                                        for (const overlay of overlays) {{
-                                            const walker = document.createTreeWalker(overlay, NodeFilter.SHOW_TEXT);
-                                            while (walker.nextNode()) {{
-                                                const node = walker.currentNode;
-                                                if (node.textContent && node.textContent.trim().toLowerCase().includes(targetText.toLowerCase())) {{
-                                                    let el = node.parentElement;
-                                                    while (el && el !== overlay) {{
-                                                        const style = window.getComputedStyle(el);
-                                                        if (style.cursor === 'pointer' || el.onclick || el.getAttribute('role')) {{
-                                                            el.click();
-                                                            return 'clicked: ' + el.tagName + ' / ' + (el.textContent || '').trim().slice(0, 50);
-                                                        }}
-                                                        el = el.parentElement;
-                                                    }}
-                                                    if (node.parentElement) {{
-                                                        node.parentElement.click();
-                                                        return 'clicked-parent: ' + node.parentElement.tagName + ' / ' + node.textContent.trim().slice(0, 50);
-                                                    }}
-                                                }}
-                                            }}
-                                        }}
-                                        return null;
-                                    }}''', target_model_name)
-                                    if clicked:
-                                        return None, True
-                                except Exception:
-                                    pass
-                                
-                                return None, False
-                            
-                            # ---- 第一轮查找 ----
-                            menu_item, menu_found = await _find_model_item(target_model_name)
-                            
-                            # ---- 第二轮：尝试滚动下拉列表 + Older models ----
-                            if not menu_found:
-                                for _ in range(8):
-                                    await page.keyboard.press("ArrowDown")
-                                    await asyncio.sleep(0.15)
-                                
-                                await asyncio.sleep(0.5)
-                                
-                                older_models_btn = page.get_by_text("Older models", exact=False).first
-                                try:
-                                    if await older_models_btn.is_visible(timeout=1500):
-                                        await older_models_btn.click(delay=random.randint(50, 150))
-                                        await asyncio.sleep(random.uniform(1.5, 2.5))
-                                except Exception:
-                                    pass
-                                
-                                menu_item, menu_found = await _find_model_item(target_model_name)
-                            
-                            # ---- 第三轮：尝试用模型名的部分文本匹配 ----
-                            if not menu_found:
-                                parts = target_model_name.split()
-                                if len(parts) > 1:
-                                    for keyword in reversed(parts):
-                                        if len(keyword) >= 2 and keyword.lower() not in ("the", "and", "for"):
-                                            menu_item, menu_found = await _find_model_item(keyword)
-                                            if menu_found:
-                                                if menu_item is None:
-                                                    break
-                                                try:
-                                                    item_text = (await menu_item.inner_text()).strip()
-                                                    import unicodedata
-                                                    normalized_target = unicodedata.normalize("NFKC", target_model_name).lower()
-                                                    normalized_item = unicodedata.normalize("NFKC", item_text).lower()
-                                                    if normalized_target not in normalized_item:
-                                                        menu_found = False
-                                                        continue
-                                                except Exception:
-                                                    pass
-                                            if menu_found:
-                                                break
-                            
-                            if menu_found and menu_item:
-                                logger.info(f"🤖 Switched AI model to '{target_model_name}'")
-                                await menu_item.click(delay=random.randint(50, 150))
-                                await asyncio.sleep(random.uniform(0.5, 1.0))
-                            elif menu_found and menu_item is None:
-                                logger.info(f"🤖 Switched AI model to '{target_model_name}'")
-                                await asyncio.sleep(random.uniform(0.5, 1.0))
-                            else:
-                                logger.warning(f"⚠️ Target model '{target_model_name}' not found in dropdown menu, keeping current model.")
-                            
-                            # 按 Escape 确保菜单收起
-                            await page.keyboard.press("Escape")
-                            await asyncio.sleep(0.5)
-                    else:
-                        logger.debug("Model selector element not found, skipping model switch.")
-                except Exception as e:
-                    logger.debug(f"Exception while switching AI model: {e}")
+                target_model_name = (getattr(config, "ai_model_email_sync", "") or "Auto").strip()
 
-            # 2. 寻找 AI 输入框
+            await self.switch_ai_model(target_model_name)
+
+            # 4. 寻找 AI 输入框
             chat_input = page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
             
             try:
@@ -652,7 +552,7 @@ class AIController:
                 logger.info(f"📸 Saved error screenshot to: {screenshot_path}")
                 return
                 
-            # 3. 输入 prompt 并发送
+            # 5. 输入 prompt 并发送
             logger.info("🚀 Submitting prompt to Notion AI...")
             await chat_input.click(delay=random.randint(50, 150))
             await asyncio.sleep(random.uniform(0.3, 0.8))

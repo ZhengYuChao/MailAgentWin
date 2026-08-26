@@ -327,11 +327,12 @@ class OutlookComArm:
                 eid = row.Item("EntryID")
                 dt = row.Item(date_prop)
                 
-                # 转换 pywintypes.datetime 为 Python datetime
+                # 转换 pywintypes.datetime 为 Python datetime（COM 返回的是本地时间）
+                from src.config import config as _cfg
                 if dt:
-                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=timezone.utc)
+                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_cfg.tz)
                 else:
-                    py_dt = datetime.min.replace(tzinfo=timezone.utc)
+                    py_dt = datetime.min.replace(tzinfo=_cfg.tz)
                 
                 # 兼容性列检查
                 has_sid_col = False
@@ -366,10 +367,11 @@ class OutlookComArm:
                 try:
                     item = items.Item(i)
                     dt = getattr(item, date_prop, None)
+                    from src.config import config as _cfg2
                     if dt:
-                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=timezone.utc)
+                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_cfg2.tz)
                     else:
-                        py_dt = datetime.min.replace(tzinfo=timezone.utc)
+                        py_dt = datetime.min.replace(tzinfo=_cfg2.tz)
                         
                     if return_dates:
                         results.append((item.EntryID, store_id, py_dt))
@@ -400,13 +402,20 @@ class OutlookComArm:
     def _to_iso(dt) -> str:
         if dt is None:
             return ""
-        # pywintypes.datetime 自带时区信息，直接保留；不强制覆盖为 UTC
+        # pywintypes.datetime 的 ReceivedTime/SentOn 返回的值是 Windows 本地时间，
+        # 但其 tzinfo 被错误地标记为 UTC (+00:00)。
+        # 必须剥离错误的 UTC tzinfo，用本机配置的时区替换，才能在后续转换中得到正确结果。
+        from src.config import config
         try:
-            # pywintypes.datetime 可直接 isoformat()
-            return dt.isoformat()
-        except AttributeError:
-            # 兜底：手动构建 python datetime（不附加时区，视为本地时间）
-            py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+            # 提取时间分量，忽略 pywintypes 的错误 tzinfo
+            py_dt = datetime(dt.year, dt.month, dt.day,
+                             dt.hour, dt.minute, dt.second,
+                             tzinfo=config.tz)
+            return py_dt.isoformat()
+        except Exception:
+            # 兜底：手动构建 python datetime（附加本地时区）
+            py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+                             tzinfo=config.tz)
             return py_dt.isoformat()
 
     @staticmethod

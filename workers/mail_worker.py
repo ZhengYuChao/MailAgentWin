@@ -19,11 +19,13 @@ from loguru import logger
 def _setup_logger():
     """配置 MailWorker 进程的日志"""
     from src.config import config
+    from src.setup.persistence import get_log_path
     logger.remove()
     log_level = getattr(config, "log_level", "INFO").upper()
     fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | [MailWorker] {message}"
-    logger.add(sys.stderr, level=log_level, format=fmt)
-    logger.add("logs/mailagent.log", rotation="10 MB", level=log_level,
+    logger.add(sys.stderr, level=log_level, format=fmt) if sys.stderr else None
+    log_path = str(get_log_path())
+    logger.add(log_path, rotation="10 MB", level=log_level,
                encoding="utf-8", format=fmt, enqueue=True)
 
 
@@ -41,28 +43,36 @@ def run_mail_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
     from workers.calendar_worker import start_calendar_sync
 
     async def _run():
+        from src.runtime.status_registry import registry
+        registry.update("mail", status="starting", task="Initializing")
+
         # 1. 启动内网穿透隧道及 API Server (按需)
         provider = getattr(config, "reverse_proxy", "").strip()
         if provider:
-            logger.info(f"⚙️ REVERSE_PROXY enabled ('{provider}'). Starting Tunnel and API Server...")
-            global_tunnel_manager.init_tunnel()
+            logger.info(f"⚙️ REVERSE_PROXY enabled ('{provider}'). Starting Webhook API Server and Tunnel...")
             api_thread = threading.Thread(target=start_api_server, daemon=True, name="APIServer")
             api_thread.start()
+            import time
+            time.sleep(0.3)
+            global_tunnel_manager.init_tunnel()
         else:
             logger.info("ℹ️ REVERSE_PROXY disabled. API Server and Tunnel will not be started.")
 
         # 2. 启动 Watcher（传入 IPC 队列和关停事件）
         watcher = WindowsWatcher(ai_trigger_queue=ai_trigger_queue, shutdown_event=shutdown_event)
-        
+
         # 3. 启动日历同步后台任务 (按需)
         if config.calendar_database_id:
             asyncio.create_task(start_calendar_sync(shutdown_event))
+
+        registry.update("mail", status="normal", task="Watching inbox")
         try:
             await watcher.start()
         except asyncio.CancelledError:
             logger.info("MailWorker run cancelled.")
         except Exception as e:
             logger.critical(f"MailWorker crashed: {e}")
+            registry.update("mail", status="abnormal", reason=str(e)[:120])
             raise
         finally:
             await watcher.stop()

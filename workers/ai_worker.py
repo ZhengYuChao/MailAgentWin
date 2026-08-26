@@ -16,11 +16,13 @@ from loguru import logger
 def _setup_logger():
     """配置 AIWorker 进程的日志"""
     from src.config import config
+    from src.setup.persistence import get_log_path
     logger.remove()
     log_level = getattr(config, "log_level", "INFO").upper()
     fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | [AIWorker] {message}"
-    logger.add(sys.stderr, level=log_level, format=fmt)
-    logger.add("logs/mailagent.log", rotation="10 MB", level=log_level,
+    logger.add(sys.stderr, level=log_level, format=fmt) if sys.stderr else None
+    log_path = str(get_log_path())
+    logger.add(log_path, rotation="10 MB", level=log_level,
                encoding="utf-8", format=fmt, enqueue=True)
 
 
@@ -31,12 +33,16 @@ def run_ai_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
     logger.info("AIWorker process starting...")
     logger.info("=" * 50)
 
+    from src.runtime.status_registry import registry
+    registry.update("ai", status="starting", task="Initializing")
+
     from src.ai.controller import AIController
     from src.scheduler.daily import daily_scheduler_loop
 
     ai_controller = AIController(ai_trigger_queue=ai_trigger_queue, shutdown_event=shutdown_event)
 
     async def _run():
+        registry.update("ai", status="normal", task="Waiting for emails")
         # 启动防抖循环和每日定时调度
         debounce_task = asyncio.create_task(ai_controller.debounce_loop())
         daily_task = asyncio.create_task(daily_scheduler_loop(ai_controller, shutdown_event))

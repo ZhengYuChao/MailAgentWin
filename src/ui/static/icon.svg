@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- 白色微渐变底板 -->
+    <radialGradient id="lightBg" cx="50%" cy="40%" r="70%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F8FAFC" />
+    </radialGradient>
+    
+    <!-- 蓝白 AI 星芒渐变 (Deep/Sky Blue -> Bright Cyan) -->
+    <linearGradient id="aiBlueWhite" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- 蓝光外发光滤镜 -->
+    <filter id="blueGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+      <feFlood flood-color="#38BDF8" flood-opacity="0.35" result="color" />
+      <feComposite in="color" in2="blur" operator="in" result="glow" />
+      <feMerge>
+        <feMergeNode in="glow" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- 1. 白色圆角矩形底板 -->
+  <rect width="512" height="512" rx="120" fill="url(#lightBg)" />
+  <rect width="508" height="508" x="2" y="2" rx="118" fill="none" stroke="#E2E8F0" stroke-width="2" />
+
+  <!-- 2. 黑色信封外框 (M 型力量感线条) -->
+  <path d="M128 200 L128 344 C128 358 138 368 152 368 L360 368 C374 368 384 358 384 344 L384 200" 
+        fill="none" stroke="#18181B" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- 3. 信封折面折线 (深灰过渡) -->
+  <path d="M136 210 L220 285 C242 305 270 305 292 285 L376 210" 
+        fill="none" stroke="#71717A" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- 4. 蓝白 AI 智能星芒 (带柔和蓝光与白芯) -->
+  <g transform="translate(256, 175)" filter="url(#blueGlow)">
+    <!-- 蓝光星芒主体 -->
+    <path d="M 0 -52 C 2.5 -16 16 -2.5 52 0 C 16 2.5 2.5 16 0 52 C -2.5 16 -16 2.5 -52 0 C -16 -2.5 -2.5 -16 0 -52 Z" 
+          fill="url(#aiBlueWhite)" />
+    <!-- 纯白光核 -->
+    <circle cx="0" cy="0" r="7" fill="#FFFFFF" />
+  </g>
+</svg>

@@ -17,15 +17,19 @@ from multiprocessing.synchronize import Event as MPEvent
 from src.config import config
 from src.notion.calendar_sync import NotionCalendarSync
 from src.mail.outlook_calendar_reader import OutlookCalendarReader
+from src.runtime.status_registry import registry
 
 
 async def start_calendar_sync(shutdown_event: MPEvent):
-    """日历同步主循环"""
+    """Calendar sync main loop with status registry reporting."""
     if not config.calendar_database_id:
         logger.info("ℹ️ CALENDAR_DATABASE_ID not set, Calendar Sync Worker is disabled.")
+        registry.update("calendar", status="off", task="Not configured", reason="")
         return
 
     logger.info("🚀 Starting Calendar Sync Worker...")
+    registry.update("calendar", status="starting", task="Initializing")
+
 
     sync = NotionCalendarSync()
     reader = OutlookCalendarReader()
@@ -42,10 +46,12 @@ async def start_calendar_sync(shutdown_event: MPEvent):
         logger.info("📅 Initializing calendar sync, fetching existing event IDs...")
         processed_ids = await sync.query_all_event_ids()
         logger.info(f"📅 Found {len(processed_ids)} existing calendar events in Notion.")
+        registry.update("calendar", status="normal", task="Idle")
 
         while not shutdown_event.is_set():
             try:
                 # 1. 从 Outlook 读取日历事件
+                registry.update("calendar", status="normal", task="Reading Outlook calendar")
                 events = await asyncio.to_thread(
                     reader.read_events,
                     past_days=past_days,
@@ -85,9 +91,12 @@ async def start_calendar_sync(shutdown_event: MPEvent):
                             
                     if success_count > 0:
                         logger.debug(f"Calendar sync loop complete: {success_count} events synced.")
+                
+                registry.update("calendar", status="normal", task="Idle")
 
             except Exception as e:
                 logger.error(f"❌ Error in calendar sync loop: {e}")
+                registry.update("calendar", status="abnormal", reason=str(e)[:120])
 
             # 休眠 interval 秒，支持响应 shutdown_event
             for _ in range(interval):
@@ -99,6 +108,7 @@ async def start_calendar_sync(shutdown_event: MPEvent):
         logger.info("Calendar Sync Worker cancelled.")
     except Exception as e:
         logger.critical(f"Calendar Sync Worker crashed: {e}")
+        registry.update("calendar", status="abnormal", reason=str(e)[:120])
     finally:
         await sync.close()
         logger.info("Calendar Sync Worker stopped.")
