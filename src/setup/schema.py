@@ -27,7 +27,7 @@ class MailAgentConfig(BaseModel):
     # ── AI ──────────────────────────────────────────────────────────────────
     ai_mode: str = "notion_ai"
     ai_enabled: bool = True
-    # Default matches .env: NOTION_AI_PAGE_URL=https://app.notion.com/ai
+    notion_ai_page_url: str = "https://app.notion.com/ai"
     notion_ai_batch_size: int = 2
     notion_ai_max_chats_per_session: int = 5
     notion_ai_max_new_chats_before_browser_restart: int = 8

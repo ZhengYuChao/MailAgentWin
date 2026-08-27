@@ -77,9 +77,14 @@ class _ConfigProxy:
         # Properties (aliases)
         if hasattr(cfg, name):
             return getattr(cfg, name)
-        # Injected secrets or runtime attributes
-        if hasattr(cfg, name):
-            return getattr(cfg, name)
+        # Case-insensitive lookup (e.g. NOTION_AI_PAGE_URL -> notion_ai_page_url)
+        lower_name = name.lower()
+        if lower_name in cfg.model_fields:
+            return getattr(cfg, lower_name)
+        if hasattr(cfg, lower_name):
+            return getattr(cfg, lower_name)
+        if lower_name == "notion_ai_page_url":
+            return "https://app.notion.com/ai"
         logger.warning(f"Config attribute '{name}' not found, returning empty string fallback.")
         return ""
 
