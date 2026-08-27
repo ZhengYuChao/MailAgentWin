@@ -605,51 +605,86 @@ class AIController:
             # 5. 输入 prompt 并发送
             logger.info("🚀 Submitting prompt to Notion AI...")
             try:
-                await chat_input.click(force=True, delay=random.randint(50, 150))
+                await chat_input.click(force=True, delay=random.randint(50, 100))
             except Exception:
+                pass
+            try:
                 await chat_input.focus()
-            await asyncio.sleep(random.uniform(0.3, 0.8))
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
             
-            # 模拟人类打字
+            # 清空可能存在的旧内容并填入 prompt
+            try:
+                await page.keyboard.press("ControlOrMeta+A")
+                await page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+
+            # 模拟人类打字输入
             if len(prompt_text) > 50:
                 await page.keyboard.insert_text(prompt_text)
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await asyncio.sleep(random.uniform(0.3, 0.8))
             else:
                 for char in prompt_text:
-                    await page.keyboard.type(char, delay=random.randint(30, 80))
-                await asyncio.sleep(random.uniform(0.5, 1.0))
+                    await page.keyboard.type(char, delay=random.randint(20, 50))
+                await asyncio.sleep(random.uniform(0.3, 0.6))
             
-            submit_btn = page.locator("[aria-label*='Submit' i], [aria-label*='Send' i]").first
-            if await submit_btn.is_visible():
-                await submit_btn.click(force=True, delay=random.randint(50, 150))
-            else:
-                await page.keyboard.press("Enter", delay=random.randint(50, 150))
-            
-            # 4. 等待生成完成
-            await asyncio.sleep(random.uniform(2.5, 4.0))
-            
-            stop_btn = page.locator("[aria-label*='Stop' i]").first
-            is_generating = await stop_btn.is_visible()
-            
-            if is_generating:
+            # 提交 Prompt（优先点击发送按钮，其次按 Enter 键）
+            submit_btn = page.locator("[data-testid='unified-chat-submit-button'], [aria-label*='Submit' i], [aria-label*='Send' i], [aria-label*='发送' i], [aria-label*='提交' i]").first
+            submitted = False
+            if await submit_btn.count() > 0 and await submit_btn.is_visible():
                 try:
-                    await stop_btn.wait_for(state="hidden", timeout=config.notion_ai_wait_timeout * 1000)
-                    logger.info("✅ Notion AI response generation completed.")
-                except Exception as e:
-                    logger.warning(f"⚠️ Issue encountered while waiting for AI response: {e}")
-            else:
-                # 如果没有 Stop 按钮，检查是否报错
-                error_msg = page.locator("text=/An error occurred|请重试/i").last
-                if await error_msg.is_visible():
-                    logger.error("❌ Notion AI returned an error indicator (An error occurred)!")
+                    await submit_btn.click(force=True, delay=100)
+                    submitted = True
+                except Exception:
+                    pass
+            if not submitted:
+                await page.keyboard.press("Enter", delay=100)
+            
+            # 6. 等待生成与工具调用完成（带心跳日志与多维度结束信号检测）
+            logger.info("⏳ Waiting for Notion AI to execute tool steps and generate response...")
+            start_wait = time.time()
+            max_wait = getattr(config, "notion_ai_wait_timeout", 600) or 600
+            completed = False
+
+            while time.time() - start_wait < max_wait:
+                await asyncio.sleep(2)
+                elapsed = int(time.time() - start_wait)
+
+                # 检查是否出现错误提示
+                error_msg = page.locator("text=/An error occurred|请重试|Something went wrong/i").last
+                if await error_msg.count() > 0 and await error_msg.is_visible():
+                    logger.error(f"❌ Notion AI returned an error: {await error_msg.inner_text()}")
                     screenshot_path = os.path.join(script_dir, "error_screenshot.png")
                     await page.screenshot(path=screenshot_path)
                     logger.info(f"📸 Error screenshot saved to: {screenshot_path}")
-                else:
-                    wait_sec = config.notion_ai_fallback_wait_sec
-                    await asyncio.sleep(wait_sec)
-                    logger.info("✅ Notion AI generation completed.")
-                
+                    completed = True
+                    break
+
+                # 检查 Stop 按钮（正在生成中）
+                stop_btn = page.locator("[aria-label*='Stop' i], [aria-label*='停止' i], [data-testid='unified-chat-stop-button']").first
+                is_generating = await stop_btn.count() > 0 and await stop_btn.is_visible()
+
+                if is_generating:
+                    if elapsed % 15 == 0:
+                        logger.info(f"✍️ Notion AI is executing tool steps / generating response... ({elapsed}s elapsed)")
+                    continue
+
+                # 生成至少持续 6 秒后，检查是否已完成
+                if elapsed >= 6:
+                    action_bar = page.locator("[aria-label*='Copy' i], [aria-label*='Undo' i], text=/Undo|全部完成|已处理完毕|已完成/i").last
+                    has_completion = await action_bar.count() > 0 and await action_bar.is_visible()
+
+                    if has_completion or not is_generating:
+                        logger.info(f"✅ Notion AI response generation completed in {elapsed}s.")
+                        completed = True
+                        break
+
+            if not completed:
+                logger.warning(f"⚠️ Reached timeout waiting for Notion AI ({max_wait}s).")
+
             try:
                 debug_screenshot_path = os.path.join(script_dir, "debug_screenshot.png")
                 await page.screenshot(path=debug_screenshot_path)
