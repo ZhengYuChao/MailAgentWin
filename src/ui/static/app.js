@@ -112,6 +112,12 @@ function navigate(view) {
   const titleEl = document.getElementById('topbar-title');
   if (titleEl) titleEl.textContent = titles[view] || '';
 
+  // Hide service state badge (e.g. Running/Stopped) when on Settings or other non-status views
+  const serviceStateEl = document.getElementById('service-state');
+  if (serviceStateEl) {
+    serviceStateEl.style.display = view === 'status' ? '' : 'none';
+  }
+
   // Side effects
   if (view === 'setup') {
     document.body.classList.add('setup-mode');
