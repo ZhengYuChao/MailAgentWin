@@ -266,14 +266,7 @@ class AIController:
                 await self.page.keyboard.press("Escape")
                 await asyncio.sleep(0.1)
 
-            # 2. 点击页面安全空白区域 (如左上角非按钮区)，触发失焦收起
-            try:
-                await self.page.mouse.click(10, 10)
-                await asyncio.sleep(0.2)
-            except Exception:
-                pass
-
-            # 3. 隐藏桌面客户端引导弹窗
+            # 2. 隐藏桌面客户端引导弹窗
             await self.page.evaluate("""() => {
                 const overlay = document.querySelector('.notion-overlay-container');
                 if (overlay) {
@@ -292,6 +285,64 @@ class AIController:
     async def _dismiss_desktop_app_prompt(self):
         """兼容旧调用：关闭或隐藏阻挡弹窗"""
         await self._close_all_overlays()
+
+    async def _get_chat_input(self):
+        """
+        精准定位 Notion AI 聊天输入框 (contenteditable)。
+        通过专属特征（placeholder/data-content-editable-leaf/testid 等）精确定位，
+        避免被侧边栏、页面正文块或搜索框干扰。
+        """
+        if not self.page:
+            return None
+        try:
+            # 1. 优先通过专属 placeholder 与 content-editable-leaf 特征精准查找
+            selectors = [
+                'div[contenteditable="true"][placeholder*="with AI" i]',
+                'div[contenteditable="true"][placeholder*="AI" i]',
+                'div[data-content-editable-leaf="true"][contenteditable="true"]',
+                '[data-testid="unified-chat-input"]',
+                'div[role="textbox"][contenteditable="true"]',
+            ]
+            for sel in selectors:
+                loc = self.page.locator(sel).filter(visible=True).last
+                if await loc.count() > 0 and await loc.is_visible():
+                    return loc
+
+            # 2. 回退：页面上最后一个可见的 contenteditable
+            fallback = self.page.locator('div[contenteditable="true"], [role="textbox"]').filter(visible=True).last
+            if await fallback.count() > 0 and await fallback.is_visible():
+                return fallback
+        except Exception as e:
+            logger.debug(f"Error finding chat input: {e}")
+        return None
+
+    async def _focus_and_activate_chat(self):
+        """
+        确保界面焦点回到 Notion AI 聊天输入框，激活输入状态与光标位置。
+        """
+        chat_input = await self._get_chat_input()
+        if not chat_input:
+            return None
+        try:
+            await chat_input.scroll_into_view_if_needed()
+            await chat_input.click(force=True, delay=50)
+            await chat_input.focus()
+            # 通过 JavaScript 强制激活光标与输入上下文
+            await chat_input.evaluate("""el => {
+                el.focus();
+                const selection = window.getSelection();
+                if (selection) {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    range.collapse(false);
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                }
+            }""")
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.debug(f"Focus chat input error: {e}")
+        return chat_input
 
     async def _get_model_selector_button(self):
         """寻找 Notion AI 聊天输入框底部的模型选择按钮"""
@@ -341,13 +392,7 @@ class AIController:
             await self._close_all_overlays()
 
             # 先聚焦聊天输入框以激活工具栏状态
-            try:
-                chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
-                if await chat_input.count() > 0:
-                    await chat_input.click(force=True, delay=50, timeout=3000)
-                    await asyncio.sleep(0.5)
-            except Exception:
-                pass
+            await self._focus_and_activate_chat()
 
             # 获取模型选择器按钮
             btn = await self._get_model_selector_button()
@@ -360,11 +405,13 @@ class AIController:
             await asyncio.sleep(1.5)
 
             # 展开 Older models 提取更完整的可用模型
+            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], .notion-overlay-container div[tabindex]'
             try:
-                older_btn = self.page.locator('.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="button"]').filter(has_text='Older models').first
+                import re
+                older_btn = self.page.locator(item_sel).filter(has_text=re.compile(r"Older models|更多模型", re.I)).first
                 if await older_btn.count() > 0 and await older_btn.is_visible(timeout=1500):
                     await older_btn.scroll_into_view_if_needed()
-                    await older_btn.click(delay=100)
+                    await older_btn.click(force=True, delay=100)
                     await asyncio.sleep(1.0)
             except Exception:
                 pass
@@ -389,7 +436,7 @@ class AIController:
                 if not lines:
                     continue
                 first = lines[0]
-                if first.lower() == "older models":
+                if first.lower() in ("older models", "更多模型"):
                     continue
                 if first.lower() == "auto":
                     if "Auto" not in models:
@@ -406,8 +453,9 @@ class AIController:
                 if name and name not in models:
                     models.append(name)
 
-            # 彻底收起所有菜单和遮罩层
+            # 彻底收起所有菜单和遮罩层并重聚焦点到聊天窗口
             await self._close_all_overlays()
+            await self._focus_and_activate_chat()
 
             if models:
                 extracted_models = models
@@ -424,6 +472,7 @@ class AIController:
         except Exception as e:
             logger.error(f"❌ Failed to sync Notion AI models: {e}")
             await self._close_all_overlays()
+            await self._focus_and_activate_chat()
 
         return extracted_models
 
@@ -438,24 +487,20 @@ class AIController:
         try:
             await self._close_all_overlays()
 
-            # 聚焦输入框以激活状态
-            try:
-                chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
-                if await chat_input.count() > 0:
-                    await chat_input.click(force=True, delay=50, timeout=3000)
-                    await asyncio.sleep(0.3)
-            except Exception:
-                pass
+            # 聚焦输入框以激活工具栏与模型选择器
+            await self._focus_and_activate_chat()
 
             btn = await self._get_model_selector_button()
             if not btn:
                 logger.warning("⚠️ Model selector button not found, skipping switch.")
+                await self._focus_and_activate_chat()
                 return False
 
             current_text = (await btn.inner_text()).strip()
             if target_model.lower() == current_text.lower() or (target_model.lower() in current_text.lower() and len(target_model) > 3):
                 logger.info(f"ℹ️ Current model is already '{current_text}', no switch needed.")
                 await self._close_all_overlays()
+                await self._focus_and_activate_chat()
                 return True
 
             # 点击展开菜单
@@ -522,13 +567,15 @@ class AIController:
                 else:
                     logger.warning(f"⚠️ Target model '{target_model}' not found in menu, keeping current '{current_text}'.")
 
-            # 确保彻底收起所有菜单和遮罩层
+            # 确保彻底收起所有菜单和遮罩层，并重新聚焦聊天输入框
             await self._close_all_overlays()
+            await self._focus_and_activate_chat()
             return switched
 
         except Exception as e:
             logger.error(f"❌ Error switching AI model to '{target_model}': {e}")
             await self._close_all_overlays()
+            await self._focus_and_activate_chat()
             return False
 
     async def _do_trigger_ai(self, action: str = None, force_new_chat: bool = False):
@@ -541,6 +588,14 @@ class AIController:
             script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             page = self.page
             
+            # 确认当前是否处于 Notion AI 页面
+            current_url = page.url or ""
+            target_url = config.notion_ai_page_url or "https://app.notion.com/ai"
+            if "notion.com/ai" not in current_url and "notion.so/ai" not in current_url:
+                logger.info(f"🌐 Navigating to Notion AI chat window: {target_url}")
+                await page.goto(target_url, wait_until="load")
+                await asyncio.sleep(4)
+            
             if force_new_chat:
                 logger.info(f"🔄 Reached maximum chats per session ({config.notion_ai_max_chats_per_session}), restarting browser for stability...")
                 await self.close()
@@ -549,12 +604,10 @@ class AIController:
                 if not success or not self.page:
                     return
                 page = self.page
-                # Explicitly click 'New chat' after restarting
                 await self._click_new_chat()
                     
             # 1. 读取 prompt
             if action == "scheduled_daily_sync":
-                # For daily sync, we always want a fresh chat regardless of limits
                 if not force_new_chat:
                     await self._click_new_chat()
                 prompt_text = (getattr(config, "prompt_daily", "") or "").strip()
@@ -586,16 +639,11 @@ class AIController:
 
             await self.switch_ai_model(target_model_name)
 
-            # 再次确认关闭所有可能残留的菜单与遮罩层
+            # 4. 再次确认关闭遮罩，并精确定位与激活聊天输入框
             await self._close_all_overlays()
-
-            # 4. 寻找 AI 输入框
-            chat_input = page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
+            chat_input = await self._focus_and_activate_chat()
             
-            try:
-                # 等待输入框就绪
-                await chat_input.wait_for(state="visible", timeout=15000)
-            except Exception:
+            if not chat_input:
                 logger.error("❌ Could not locate a visible Notion AI Chat input box!")
                 screenshot_path = os.path.join(script_dir, "error_screenshot.png")
                 await page.screenshot(path=screenshot_path)
@@ -604,17 +652,8 @@ class AIController:
                 
             # 5. 输入 prompt 并发送
             logger.info("🚀 Submitting prompt to Notion AI...")
-            try:
-                await chat_input.click(force=True, delay=random.randint(50, 100))
-            except Exception:
-                pass
-            try:
-                await chat_input.focus()
-            except Exception:
-                pass
-            await asyncio.sleep(0.3)
             
-            # 清空可能存在的旧内容并填入 prompt
+            # 清空可能存在的旧内容
             try:
                 await page.keyboard.press("ControlOrMeta+A")
                 await page.keyboard.press("Backspace")
@@ -625,14 +664,31 @@ class AIController:
             # 模拟人类打字输入
             if len(prompt_text) > 50:
                 await page.keyboard.insert_text(prompt_text)
-                await asyncio.sleep(random.uniform(0.3, 0.8))
+                await asyncio.sleep(random.uniform(0.3, 0.6))
             else:
                 for char in prompt_text:
                     await page.keyboard.type(char, delay=random.randint(20, 50))
-                await asyncio.sleep(random.uniform(0.3, 0.6))
+                await asyncio.sleep(random.uniform(0.2, 0.4))
+
+            # 验证输入框是否已填入内容，若未注入则调用 execCommand 强制注入
+            has_text = False
+            try:
+                has_text = await chat_input.evaluate("el => ((el.innerText || el.textContent || '').trim().length > 0)")
+            except Exception:
+                pass
+
+            if not has_text:
+                logger.warning("⚠️ Text not detected in chat input via keyboard, using direct DOM insertion fallback...")
+                await chat_input.evaluate("""(el, text) => {
+                    el.focus();
+                    document.execCommand('insertText', false, text);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }""", prompt_text)
+                await asyncio.sleep(0.5)
             
             # 提交 Prompt（优先点击发送按钮，其次按 Enter 键）
-            submit_btn = page.locator("[data-testid='unified-chat-submit-button'], [aria-label*='Submit' i], [aria-label*='Send' i], [aria-label*='发送' i], [aria-label*='提交' i]").first
+            submit_btn = page.locator("[data-testid='unified-chat-submit-button'], [aria-label*='Submit' i], [aria-label*='Send' i], [aria-label*='发送' i], [aria-label*='提交' i], div[role='button']:has(svg)").filter(visible=True).last
             submitted = False
             if await submit_btn.count() > 0 and await submit_btn.is_visible():
                 try:
