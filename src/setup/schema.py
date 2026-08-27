@@ -175,7 +175,7 @@ class MailAgentConfig(BaseModel):
         }
         return super().model_dump(exclude=exclude, **kwargs)
 
-    @field_validator("email_template_id", "calendar_template_id", mode="before")
+    @field_validator("email_template_id", "calendar_template_id", "new_mail_database_id", mode="before")
     @classmethod
     def normalize_notion_id(cls, v: str) -> str:
         """Strip dashes from Notion IDs stored in config."""
