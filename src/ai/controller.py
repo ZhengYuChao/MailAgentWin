@@ -375,6 +375,43 @@ class AIController:
             logger.debug(f"Error finding model selector button: {e}")
         return None
 
+    async def _open_model_selector_dropdown(self, btn) -> bool:
+        """
+        可靠地点击打开模型选择下拉菜单，并验证弹窗菜单是否已成功挂载到 DOM。
+        """
+        if not btn or not self.page:
+            return False
+
+        for attempt in range(1, 4):
+            try:
+                await btn.scroll_into_view_if_needed()
+                await btn.click(force=True, delay=100)
+            except Exception:
+                try:
+                    await btn.evaluate("el => el.click()")
+                except Exception:
+                    pass
+
+            await asyncio.sleep(1.0)
+
+            # 检查菜单是否已挂载到 DOM
+            has_menu = await self.page.evaluate("""() => {
+                const containers = document.querySelectorAll('.notion-overlay-container, [role="menu"], [data-radix-popper-content-wrapper], [role="dialog"]');
+                for (const c of containers) {
+                    const items = c.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], div[role="button"], div[tabindex]');
+                    if (items.length > 0) return true;
+                }
+                return false;
+            }""")
+
+            if has_menu:
+                return True
+
+            logger.debug(f"Model dropdown menu not visible on attempt {attempt}, retrying...")
+            await asyncio.sleep(0.5)
+
+        return False
+
     async def sync_available_models(self) -> list[str]:
         """
         每次启动/重连无头浏览器时自动执行：
@@ -391,9 +428,6 @@ class AIController:
         try:
             await self._close_all_overlays()
 
-            # 先聚焦聊天输入框以激活工具栏状态
-            await self._focus_and_activate_chat()
-
             # 获取模型选择器按钮
             btn = await self._get_model_selector_button()
             if not btn:
@@ -401,32 +435,41 @@ class AIController:
                 return []
 
             # 点击打开模型下拉列表
-            await btn.click(force=True, delay=100)
-            await asyncio.sleep(1.5)
+            opened = await self._open_model_selector_dropdown(btn)
+            if not opened:
+                logger.warning("⚠️ Failed to open model dropdown menu.")
+                await self._close_all_overlays()
+                await self._focus_and_activate_chat()
+                return []
 
             # 展开 Older models 提取更完整的可用模型
-            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], .notion-overlay-container div[tabindex]'
+            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], [role="menu"] [role="menuitem"], [role="menu"] [role="option"], [role="menu"] [role="button"], [data-radix-popper-content-wrapper] [role="menuitem"]'
             try:
                 import re
                 older_btn = self.page.locator(item_sel).filter(has_text=re.compile(r"Older models|更多模型", re.I)).first
-                if await older_btn.count() > 0 and await older_btn.is_visible(timeout=1500):
-                    await older_btn.scroll_into_view_if_needed()
-                    await older_btn.click(force=True, delay=100)
+                if await older_btn.count() > 0 and await older_btn.is_visible():
+                    try:
+                        await older_btn.scroll_into_view_if_needed()
+                        await older_btn.click(force=True, delay=100)
+                    except Exception:
+                        await older_btn.evaluate("el => el.click()")
                     await asyncio.sleep(1.0)
             except Exception:
                 pass
 
-            # 从弹出菜单中提取所有模型项
+            # 从所有弹出菜单容器中提取所有模型项
             raw_items = await self.page.evaluate("""() => {
-                const overlay = document.querySelector('.notion-overlay-container');
-                const items = overlay ? overlay.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]') : [];
+                const containers = document.querySelectorAll('.notion-overlay-container, [role="menu"], [data-radix-popper-content-wrapper], [role="dialog"]');
                 const results = [];
-                items.forEach(el => {
-                    const text = el.innerText || '';
-                    const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
-                    if (lines.length > 0) {
-                        results.push(lines);
-                    }
+                containers.forEach(c => {
+                    const items = c.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], div[role="button"]');
+                    items.forEach(el => {
+                        const text = el.innerText || el.textContent || '';
+                        const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
+                        if (lines.length > 0) {
+                            results.push(lines);
+                        }
+                    });
                 });
                 return results;
             }""")
@@ -487,9 +530,6 @@ class AIController:
         try:
             await self._close_all_overlays()
 
-            # 聚焦输入框以激活工具栏与模型选择器
-            await self._focus_and_activate_chat()
-
             btn = await self._get_model_selector_button()
             if not btn:
                 logger.warning("⚠️ Model selector button not found, skipping switch.")
@@ -504,11 +544,15 @@ class AIController:
                 return True
 
             # 点击展开菜单
-            await btn.click(force=True, delay=100)
-            await asyncio.sleep(1.0)
+            opened = await self._open_model_selector_dropdown(btn)
+            if not opened:
+                logger.warning(f"⚠️ Failed to open model dropdown menu, keeping current '{current_text}'.")
+                await self._close_all_overlays()
+                await self._focus_and_activate_chat()
+                return False
 
             # 支持多种 ARIA 角色与元素类型的选择器
-            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], .notion-overlay-container div[tabindex]'
+            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], [role="menu"] [role="menuitem"], [role="menu"] [role="option"], [role="menu"] [role="button"], [data-radix-popper-content-wrapper] [role="menuitem"]'
 
             async def _find_item(name: str):
                 import re
