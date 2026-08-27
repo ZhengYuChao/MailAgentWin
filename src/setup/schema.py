@@ -28,10 +28,10 @@ class MailAgentConfig(BaseModel):
     ai_mode: str = "notion_ai"
     ai_enabled: bool = True
     # Default matches .env: NOTION_AI_PAGE_URL=https://app.notion.com/ai
-    notion_ai_page_url: str = "https://app.notion.com/ai"
-    notion_ai_batch_size: int = 5
+    notion_ai_batch_size: int = 2
     notion_ai_max_chats_per_session: int = 5
-    debounce_quiet_sec: int = 120
+    notion_ai_max_new_chats_before_browser_restart: int = 8
+    debounce_quiet_sec: int = 30
     debounce_force_sec: int = 1800
     notion_ai_fallback_wait_sec: int = 120
     notion_ai_wait_timeout: int = 600

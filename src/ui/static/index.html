@@ -274,10 +274,17 @@
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Chats per session</div>
-              <div class="setting-desc">Maximum chat messages per session before starting a fresh chat to avoid latency.</div>
+              <div class="setting-name">Prompts per chat</div>
+              <div class="setting-desc">Maximum prompt turns within the same chat before clicking 'New chat' (default: 5).</div>
             </div>
             <div class="setting-control"><input class="setting-input" type="number" id="s-notionAiMaxChatsPerSession" data-key="notion_ai_max_chats_per_session"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">New chats before browser restart</div>
+              <div class="setting-desc">Maximum new chat sessions before restarting the headless browser for memory cleanup (default: 8).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-notionAiMaxNewChatsBeforeBrowserRestart" data-key="notion_ai_max_new_chats_before_browser_restart"></div>
           </div>
           <div class="setting-row">
             <div class="setting-info">

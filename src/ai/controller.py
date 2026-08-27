@@ -25,7 +25,9 @@ class AIController:
         
         # 批处理与会话状态
         self._uploaded_in_batch = 0
-        self._ai_chats_in_session = 0
+        self._prompts_in_current_chat = 0          # 当前 Notion AI 对话内的 prompt 提交计数 (上限如 5 次)
+        self._new_chats_count = 0                  # 已开启的 New Chat 会话计数 (上限如 8 次后重启浏览器)
+        self._ai_chats_in_session = 0              # 兼容字段
         
         # 并发控制 —— 使用 asyncio.Lock 确保 AI 触发严格串行排队
         self._lock = asyncio.Lock()
@@ -150,15 +152,37 @@ class AIController:
             return
 
         try:
-            self._ai_chats_in_session += 1
-            force_new_chat = self._ai_chats_in_session > config.notion_ai_max_chats_per_session
-            if force_new_chat:
-                 self._ai_chats_in_session = 1
-                 logger.info(f"🔄 Reached session chat limit ({config.notion_ai_max_chats_per_session}), forcing a new chat conversation.")
-                 
+            restart_browser = False
+            need_new_chat = False
+
+            if action == "scheduled_daily_sync":
+                # 每日总结使用独立对话
+                need_new_chat = True
+            else:
+                self._prompts_in_current_chat += 1
+                max_prompts = getattr(config, "notion_ai_max_chats_per_session", 5) or 5
+                max_new_chats = getattr(config, "notion_ai_max_new_chats_before_browser_restart", 8) or 8
+
+                # 判定是否需要开启 New Chat（满 max_prompts 次 prompt 时）
+                if self._prompts_in_current_chat > max_prompts:
+                    self._prompts_in_current_chat = 1
+                    self._new_chats_count += 1
+
+                    if self._new_chats_count >= max_new_chats:
+                        # 满 8 次 New Chat，彻底重启无头浏览器释放资源
+                        self._new_chats_count = 0
+                        restart_browser = True
+                        logger.info(f"🔄 Reached browser session limit ({max_new_chats} new chats). Restarting browser for memory cleanup...")
+                    else:
+                        # 满 5 次 Prompt，仅在同一浏览器内开启新对话
+                        need_new_chat = True
+                        logger.info(f"🆕 Reached chat prompt limit ({max_prompts} in current chat). Opening New Chat ({self._new_chats_count}/{max_new_chats})...")
+                else:
+                    logger.info(f"💬 Submitting prompt to current chat (Prompt {self._prompts_in_current_chat}/{max_prompts} in current session)...")
+
             self._last_ai_trigger_time = time.time()
             try:
-                await self._do_trigger_ai(action=action, force_new_chat=force_new_chat)
+                await self._do_trigger_ai(action=action, restart_browser=restart_browser, need_new_chat=need_new_chat)
             except Exception as e:
                 import traceback
                 logger.error(f"❌ Failed to trigger Notion AI:\n{traceback.format_exc()}")
@@ -622,16 +646,26 @@ class AIController:
             await self._focus_and_activate_chat()
             return False
 
-    async def _do_trigger_ai(self, action: str = None, force_new_chat: bool = False):
+    async def _do_trigger_ai(self, action: str = None, restart_browser: bool = False, need_new_chat: bool = False):
         """实际在持久化的浏览器中输入 Prompt"""
         try:
-            success = await self._ensure_browser()
-            if not success or not self.page:
-                return
-                
+            if restart_browser:
+                logger.info("🔄 Restarting headless browser for stability and memory cleanup...")
+                await self.close()
+                await asyncio.sleep(2)
+                success = await self._ensure_browser()
+                if not success or not self.page:
+                    return
+                # 重启浏览器后天然进入初始新会话
+                need_new_chat = False
+            else:
+                success = await self._ensure_browser()
+                if not success or not self.page:
+                    return
+
             script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             page = self.page
-            
+
             # 确认当前是否处于 Notion AI 页面
             current_url = page.url or ""
             target_url = config.notion_ai_page_url or "https://app.notion.com/ai"
@@ -639,21 +673,14 @@ class AIController:
                 logger.info(f"🌐 Navigating to Notion AI chat window: {target_url}")
                 await page.goto(target_url, wait_until="load")
                 await asyncio.sleep(4)
-            
-            if force_new_chat:
-                logger.info(f"🔄 Reached maximum chats per session ({config.notion_ai_max_chats_per_session}), restarting browser for stability...")
-                await self.close()
-                await asyncio.sleep(2)
-                success = await self._ensure_browser()
-                if not success or not self.page:
-                    return
-                page = self.page
+                need_new_chat = False
+
+            if need_new_chat:
                 await self._click_new_chat()
-                    
+                await asyncio.sleep(1.0)
+
             # 1. 读取 prompt
             if action == "scheduled_daily_sync":
-                if not force_new_chat:
-                    await self._click_new_chat()
                 prompt_text = (getattr(config, "prompt_daily", "") or "").strip()
                 if not prompt_text:
                     schedule_file = os.path.join(script_dir, "prompt_daily.txt")
