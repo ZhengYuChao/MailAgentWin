@@ -239,10 +239,11 @@ class AIController:
         try:
             if not self.page:
                 return False
+            await self._close_all_overlays()
             logger.info("🆕 Clicking 'New chat' button to start an isolated session...")
             new_chat_btn = self.page.locator("div[role='button']:has-text('New chat'), button:has-text('New chat'), [aria-label='New chat']").first
             if await new_chat_btn.is_visible(timeout=5000):
-                await new_chat_btn.click(delay=100)
+                await new_chat_btn.click(force=True, delay=100)
                 await asyncio.sleep(random.uniform(1.5, 2.5))
                 return True
             else:
@@ -252,21 +253,45 @@ class AIController:
             logger.warning(f"⚠️ Failed to click 'New chat': {e}")
             return False
 
-    async def _dismiss_desktop_app_prompt(self):
-        """关闭或隐藏 'Open in Notion's desktop app' 等阻挡弹窗，不破坏 overlay-container 根节点"""
+    async def _close_all_overlays(self):
+        """
+        彻底收起 Notion 页面上的所有下拉菜单、二级弹出层以及遮罩层 (Overlay Container)，
+        避免残留的 backdrop 阻挡对输入框或按钮的点击事件。
+        """
         if not self.page:
             return
         try:
+            # 1. 连续按 Escape 键收起多级菜单 (如 Older models -> Model selector menu)
+            for _ in range(3):
+                await self.page.keyboard.press("Escape")
+                await asyncio.sleep(0.1)
+
+            # 2. 点击页面安全空白区域 (如左上角非按钮区)，触发失焦收起
+            try:
+                await self.page.mouse.click(10, 10)
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
+
+            # 3. 隐藏桌面客户端引导弹窗
             await self.page.evaluate("""() => {
-                const divs = document.querySelectorAll('.notion-overlay-container > div');
-                divs.forEach(d => {
-                    if (d.innerText && (d.innerText.includes('desktop app') || d.innerText.includes('Open in'))) {
-                        d.style.display = 'none';
-                    }
-                });
+                const overlay = document.querySelector('.notion-overlay-container');
+                if (overlay) {
+                    const divs = overlay.querySelectorAll(':scope > div');
+                    divs.forEach(d => {
+                        const text = d.innerText || '';
+                        if (text.includes('desktop app') || text.includes('Open in')) {
+                            d.style.display = 'none';
+                        }
+                    });
+                }
             }""")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error in _close_all_overlays: {e}")
+
+    async def _dismiss_desktop_app_prompt(self):
+        """兼容旧调用：关闭或隐藏阻挡弹窗"""
+        await self._close_all_overlays()
 
     async def _get_model_selector_button(self):
         """寻找 Notion AI 聊天输入框底部的模型选择按钮"""
@@ -313,13 +338,13 @@ class AIController:
         extracted_models = []
 
         try:
-            await self._dismiss_desktop_app_prompt()
+            await self._close_all_overlays()
 
             # 先聚焦聊天输入框以激活工具栏状态
             try:
                 chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
                 if await chat_input.count() > 0:
-                    await chat_input.click(delay=50, timeout=3000)
+                    await chat_input.click(force=True, delay=50, timeout=3000)
                     await asyncio.sleep(0.5)
             except Exception:
                 pass
@@ -381,9 +406,8 @@ class AIController:
                 if name and name not in models:
                     models.append(name)
 
-            # 按 Escape 键收起菜单
-            await self.page.keyboard.press("Escape")
-            await asyncio.sleep(0.5)
+            # 彻底收起所有菜单和遮罩层
+            await self._close_all_overlays()
 
             if models:
                 extracted_models = models
@@ -399,10 +423,7 @@ class AIController:
 
         except Exception as e:
             logger.error(f"❌ Failed to sync Notion AI models: {e}")
-            try:
-                await self.page.keyboard.press("Escape")
-            except Exception:
-                pass
+            await self._close_all_overlays()
 
         return extracted_models
 
@@ -415,13 +436,13 @@ class AIController:
         logger.info(f"🤖 Checking/Switching Notion AI model to: '{target_model}'...")
 
         try:
-            await self._dismiss_desktop_app_prompt()
+            await self._close_all_overlays()
 
-            # 聚焦输入框
+            # 聚焦输入框以激活状态
             try:
                 chat_input = self.page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
                 if await chat_input.count() > 0:
-                    await chat_input.click(delay=50, timeout=3000)
+                    await chat_input.click(force=True, delay=50, timeout=3000)
                     await asyncio.sleep(0.3)
             except Exception:
                 pass
@@ -433,55 +454,81 @@ class AIController:
 
             current_text = (await btn.inner_text()).strip()
             if target_model.lower() == current_text.lower() or (target_model.lower() in current_text.lower() and len(target_model) > 3):
-                logger.debug(f"Current model is already '{current_text}', no switch needed.")
+                logger.info(f"ℹ️ Current model is already '{current_text}', no switch needed.")
+                await self._close_all_overlays()
                 return True
 
             # 点击展开菜单
             await btn.click(force=True, delay=100)
             await asyncio.sleep(1.0)
 
-            # 在菜单中查找目标模型
-            item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=target_model).first
-            parts = target_model.split()
-            if await item.count() == 0 and len(parts) > 1:
-                item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=parts[0]).filter(has_text=parts[-1]).first
+            # 支持多种 ARIA 角色与元素类型的选择器
+            item_sel = '.notion-overlay-container [role="menuitem"], .notion-overlay-container [role="option"], .notion-overlay-container [role="menuitemradio"], .notion-overlay-container [role="button"], .notion-overlay-container div[tabindex]'
 
-            if await item.count() > 0 and await item.is_visible():
-                await item.click(delay=100)
+            async def _find_item(name: str):
+                import re
+                # 1. 直接文本匹配
+                it = self.page.locator(item_sel).filter(has_text=name).first
+                if await it.count() > 0 and await it.is_visible():
+                    return it
+                # 2. 分词首尾组合匹配 (例如 "Gemini" + "Flash")
+                parts = name.split()
+                if len(parts) > 1:
+                    it = self.page.locator(item_sel).filter(has_text=parts[0]).filter(has_text=parts[-1]).first
+                    if await it.count() > 0 and await it.is_visible():
+                        return it
+                # 3. 正则忽略大小写
+                it = self.page.locator(item_sel).filter(has_text=re.compile(re.escape(name), re.I)).first
+                if await it.count() > 0 and await it.is_visible():
+                    return it
+                return None
+
+            item = await _find_item(target_model)
+            switched = False
+
+            if item:
+                try:
+                    await item.scroll_into_view_if_needed()
+                    await item.click(force=True, delay=100)
+                except Exception:
+                    await item.evaluate("el => el.click()")
                 await asyncio.sleep(1.0)
                 logger.info(f"✅ Successfully switched AI model to '{target_model}'.")
+                switched = True
             else:
                 # 尝试展开 Older models 再查找
-                older_btn = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text='Older models').first
+                import re
+                older_btn = self.page.locator(item_sel).filter(has_text=re.compile(r"Older models|更多模型", re.I)).first
                 if await older_btn.count() > 0 and await older_btn.is_visible():
-                    await older_btn.scroll_into_view_if_needed()
-                    await older_btn.click(delay=100)
+                    try:
+                        await older_btn.scroll_into_view_if_needed()
+                        await older_btn.click(force=True, delay=100)
+                    except Exception:
+                        await older_btn.evaluate("el => el.click()")
                     await asyncio.sleep(1.0)
 
-                    item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=target_model).first
-                    if await item.count() == 0 and len(parts) > 1:
-                        item = self.page.locator('.notion-overlay-container [role="menuitem"]').filter(has_text=parts[0]).filter(has_text=parts[-1]).first
-
-                    if await item.count() > 0 and await item.is_visible():
-                        await item.click(delay=100)
+                    item = await _find_item(target_model)
+                    if item:
+                        try:
+                            await item.scroll_into_view_if_needed()
+                            await item.click(force=True, delay=100)
+                        except Exception:
+                            await item.evaluate("el => el.click()")
                         await asyncio.sleep(1.0)
                         logger.info(f"✅ Successfully switched AI model to '{target_model}' (from Older models).")
+                        switched = True
                     else:
                         logger.warning(f"⚠️ Target model '{target_model}' not found in menu, keeping current '{current_text}'.")
                 else:
                     logger.warning(f"⚠️ Target model '{target_model}' not found in menu, keeping current '{current_text}'.")
 
-            # 确保收起菜单
-            await self.page.keyboard.press("Escape")
-            await asyncio.sleep(0.5)
-            return True
+            # 确保彻底收起所有菜单和遮罩层
+            await self._close_all_overlays()
+            return switched
 
         except Exception as e:
             logger.error(f"❌ Error switching AI model to '{target_model}': {e}")
-            try:
-                await self.page.keyboard.press("Escape")
-            except Exception:
-                pass
+            await self._close_all_overlays()
             return False
 
     async def _do_trigger_ai(self, action: str = None, force_new_chat: bool = False):
@@ -528,8 +575,8 @@ class AIController:
                 if not prompt_text:
                     prompt_text = "Summarize this email and suggest a reply."
                     
-            # 2. 移除可能拦截点击的桌面弹窗
-            await self._dismiss_desktop_app_prompt()
+            # 2. 移除可能拦截点击的弹窗与遮罩层
+            await self._close_all_overlays()
 
             # 3. 寻找并切换 AI 模型
             if action == "scheduled_daily_sync":
@@ -538,6 +585,9 @@ class AIController:
                 target_model_name = (getattr(config, "ai_model_email_sync", "") or "Auto").strip()
 
             await self.switch_ai_model(target_model_name)
+
+            # 再次确认关闭所有可能残留的菜单与遮罩层
+            await self._close_all_overlays()
 
             # 4. 寻找 AI 输入框
             chat_input = page.locator("div[contenteditable='true'], [role='textbox']").locator("visible=true").last
@@ -554,7 +604,10 @@ class AIController:
                 
             # 5. 输入 prompt 并发送
             logger.info("🚀 Submitting prompt to Notion AI...")
-            await chat_input.click(delay=random.randint(50, 150))
+            try:
+                await chat_input.click(force=True, delay=random.randint(50, 150))
+            except Exception:
+                await chat_input.focus()
             await asyncio.sleep(random.uniform(0.3, 0.8))
             
             # 模拟人类打字
@@ -568,7 +621,7 @@ class AIController:
             
             submit_btn = page.locator("[aria-label*='Submit' i], [aria-label*='Send' i]").first
             if await submit_btn.is_visible():
-                await submit_btn.click(delay=random.randint(50, 150))
+                await submit_btn.click(force=True, delay=random.randint(50, 150))
             else:
                 await page.keyboard.press("Enter", delay=random.randint(50, 150))
             

@@ -10,6 +10,10 @@ __pycache__/
 .coverage
 htmlcov/
 .mypy_cache/
+.venv/
+venv/
+ENV/
+env/
 
 # Notion Auth state (Contains cookies and session tokens - SENSITIVE!)
 notion_auth.json
