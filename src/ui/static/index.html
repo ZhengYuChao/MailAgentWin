@@ -663,8 +663,8 @@
             </div>
           </div>
 
-          <!-- Group 3: Calendar & Background Tasks -->
-          <div class="settings-group-title">Calendar & Background Tasks</div>
+          <!-- Group 3: Calendar & Sync Settings -->
+          <div class="settings-group-title">Calendar & Sync Settings</div>
           <div class="setting-row">
             <div class="setting-info">
               <div class="setting-name">Calendar refresh (seconds)</div>
@@ -695,6 +695,58 @@
           </div>
           <div class="setting-row">
             <div class="setting-info">
+              <div class="setting-name">Force sync days</div>
+              <div class="setting-desc">Default number of days scanned during a manual Force Sync trigger.</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-forceSyncDays" data-key="force_sync_days"></div>
+          </div>
+
+          <!-- Group 4: AI Engine & Debounce Tuning -->
+          <div class="settings-group-title">AI Engine & Debounce Tuning</div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Batch size</div>
+              <div class="setting-desc">Number of newly synced emails required to immediately force-trigger a Notion AI batch (default: 2).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-adv-notionAiBatchSize" data-key="notion_ai_batch_size"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Quiet period (seconds)</div>
+              <div class="setting-desc">Wait duration in seconds after the last email arrives before triggering AI if batch is not full (default: 30).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-adv-debounceQuietSec" data-key="debounce_quiet_sec"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Forced run (seconds)</div>
+              <div class="setting-desc">Maximum delay in seconds before forcing an AI run regardless of incoming activity (default: 1800).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-adv-debounceForceSec" data-key="debounce_force_sec"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Prompts per chat</div>
+              <div class="setting-desc">Maximum prompt turns within the same chat before clicking 'New chat' to start a fresh thread (default: 5).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-adv-notionAiMaxChatsPerSession" data-key="notion_ai_max_chats_per_session"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">New chats before browser restart</div>
+              <div class="setting-desc">Maximum new chat sessions before restarting the Playwright headless browser for memory cleanup (default: 8).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input" type="number" id="s-adv-notionAiMaxNewChatsBeforeBrowserRestart" data-key="notion_ai_max_new_chats_before_browser_restart"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Notion AI page URL</div>
+              <div class="setting-desc">Notion AI web app URL for headless browser automation (default: https://app.notion.com/ai).</div>
+            </div>
+            <div class="setting-control"><input class="setting-input wide" type="text" id="s-adv-notionAiPageUrl" data-key="notion_ai_page_url"></div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
               <div class="setting-name">AI fallback wait (s)</div>
               <div class="setting-desc">Fallback wait duration in seconds if Notion AI stop generation button is not detected.</div>
             </div>
@@ -703,7 +755,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <div class="setting-name">AI wait timeout (s)</div>
-              <div class="setting-desc">Maximum timeout in seconds to wait for Notion AI response completion.</div>
+              <div class="setting-desc">Maximum timeout in seconds to wait for Notion AI response and tool step execution.</div>
             </div>
             <div class="setting-control"><input class="setting-input" type="number" id="s-notionAiWaitTimeout" data-key="notion_ai_wait_timeout"></div>
           </div>

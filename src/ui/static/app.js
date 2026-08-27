@@ -715,11 +715,25 @@ function initSettings() {
     });
   }
 
-  // Listen for setting changes to toggle Save button enabled state
+  // Listen for setting changes to toggle Save button enabled state & sync duplicate keys
   const settingsSection = document.getElementById('view-settings');
   if (settingsSection) {
-    settingsSection.addEventListener('input', updateSettingsDirtyState);
-    settingsSection.addEventListener('change', updateSettingsDirtyState);
+    const handleSettingInput = (e) => {
+      const target = e.target;
+      if (target && target.dataset && target.dataset.key) {
+        const key = target.dataset.key;
+        const val = target.type === 'checkbox' ? target.checked : target.value;
+        document.querySelectorAll(`#view-settings [data-key="${key}"]`).forEach(el => {
+          if (el !== target) {
+            if (el.type === 'checkbox') el.checked = val;
+            else el.value = val;
+          }
+        });
+      }
+      updateSettingsDirtyState();
+    };
+    settingsSection.addEventListener('input', handleSettingInput);
+    settingsSection.addEventListener('change', handleSettingInput);
   }
 
   // Initialize Logs viewer
