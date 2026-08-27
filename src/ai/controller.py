@@ -304,12 +304,12 @@ class AIController:
                 'div[role="textbox"][contenteditable="true"]',
             ]
             for sel in selectors:
-                loc = self.page.locator(sel).filter(visible=True).last
+                loc = self.page.locator(sel).last
                 if await loc.count() > 0 and await loc.is_visible():
                     return loc
 
             # 2. 回退：页面上最后一个可见的 contenteditable
-            fallback = self.page.locator('div[contenteditable="true"], [role="textbox"]').filter(visible=True).last
+            fallback = self.page.locator('div[contenteditable="true"], [role="textbox"]').last
             if await fallback.count() > 0 and await fallback.is_visible():
                 return fallback
         except Exception as e:
@@ -688,7 +688,7 @@ class AIController:
                 await asyncio.sleep(0.5)
             
             # 提交 Prompt（优先点击发送按钮，其次按 Enter 键）
-            submit_btn = page.locator("[data-testid='unified-chat-submit-button'], [aria-label*='Submit' i], [aria-label*='Send' i], [aria-label*='发送' i], [aria-label*='提交' i], div[role='button']:has(svg)").filter(visible=True).last
+            submit_btn = page.locator("[data-testid='unified-chat-submit-button'], [aria-label*='Submit' i], [aria-label*='Send' i], [aria-label*='发送' i], [aria-label*='提交' i]").first
             submitted = False
             if await submit_btn.count() > 0 and await submit_btn.is_visible():
                 try:
@@ -710,9 +710,10 @@ class AIController:
                 elapsed = int(time.time() - start_wait)
 
                 # 检查是否出现错误提示
-                error_msg = page.locator("text=/An error occurred|请重试|Something went wrong/i").last
-                if await error_msg.count() > 0 and await error_msg.is_visible():
-                    logger.error(f"❌ Notion AI returned an error: {await error_msg.inner_text()}")
+                import re
+                error_loc = page.get_by_text(re.compile(r"An error occurred|请重试|Something went wrong", re.I)).last
+                if await error_loc.count() > 0 and await error_loc.is_visible():
+                    logger.error(f"❌ Notion AI returned an error: {await error_loc.inner_text()}")
                     screenshot_path = os.path.join(script_dir, "error_screenshot.png")
                     await page.screenshot(path=screenshot_path)
                     logger.info(f"📸 Error screenshot saved to: {screenshot_path}")
@@ -730,8 +731,14 @@ class AIController:
 
                 # 生成至少持续 6 秒后，检查是否已完成
                 if elapsed >= 6:
-                    action_bar = page.locator("[aria-label*='Copy' i], [aria-label*='Undo' i], text=/Undo|全部完成|已处理完毕|已完成/i").last
-                    has_completion = await action_bar.count() > 0 and await action_bar.is_visible()
+                    btn_completion = page.locator("[aria-label*='Copy' i], [aria-label*='Undo' i], [aria-label*='复制' i], [aria-label*='撤销' i]").last
+                    txt_completion = page.get_by_text(re.compile(r"Undo|全部完成|已处理完毕|已完成", re.I)).last
+
+                    has_completion = False
+                    if await btn_completion.count() > 0 and await btn_completion.is_visible():
+                        has_completion = True
+                    elif await txt_completion.count() > 0 and await txt_completion.is_visible():
+                        has_completion = True
 
                     if has_completion or not is_generating:
                         logger.info(f"✅ Notion AI response generation completed in {elapsed}s.")
