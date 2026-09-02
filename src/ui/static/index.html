@@ -234,6 +234,52 @@
           </div>
           <div class="setting-row">
             <div class="setting-info">
+              <div class="setting-name">App timezone</div>
+              <div class="setting-desc">Timezone for email timestamps, calendar scheduling, and daily digest generation.</div>
+            </div>
+            <div class="setting-control">
+              <select class="setting-input wide" id="s-appTimezoneConn" data-key="app_timezone">
+                <option value="auto">Auto (Detect System Timezone)</option>
+                <optgroup label="Asia & Oceania">
+                  <option value="Asia/Shanghai">Asia/Shanghai (Beijing, CST, UTC+8)</option>
+                  <option value="Asia/Hong_Kong">Asia/Hong_Kong (HKT, UTC+8)</option>
+                  <option value="Asia/Taipei">Asia/Taipei (CST, UTC+8)</option>
+                  <option value="Asia/Tokyo">Asia/Tokyo (JST, UTC+9)</option>
+                  <option value="Asia/Seoul">Asia/Seoul (KST, UTC+9)</option>
+                  <option value="Asia/Singapore">Asia/Singapore (SGT, UTC+8)</option>
+                  <option value="Asia/Bangkok">Asia/Bangkok (ICT, UTC+7)</option>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST, UTC+5:30)</option>
+                  <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
+                  <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT, UTC+10/+11)</option>
+                  <option value="Australia/Melbourne">Australia/Melbourne (AEST/AEDT, UTC+10/+11)</option>
+                  <option value="Pacific/Auckland">Pacific/Auckland (NZST/NZDT, UTC+12/+13)</option>
+                </optgroup>
+                <optgroup label="Europe & Africa">
+                  <option value="Europe/London">Europe/London (GMT/BST, UTC+0/+1)</option>
+                  <option value="Europe/Paris">Europe/Paris (CET/CEST, UTC+1/+2)</option>
+                  <option value="Europe/Berlin">Europe/Berlin (CET/CEST, UTC+1/+2)</option>
+                  <option value="Europe/Amsterdam">Europe/Amsterdam (CET/CEST, UTC+1/+2)</option>
+                  <option value="Europe/Moscow">Europe/Moscow (MSK, UTC+3)</option>
+                </optgroup>
+                <optgroup label="Americas">
+                  <option value="America/New_York">America/New_York (Eastern Time, UTC-5/-4)</option>
+                  <option value="America/Chicago">America/Chicago (Central Time, UTC-6/-5)</option>
+                  <option value="America/Denver">America/Denver (Mountain Time, UTC-7/-6)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (Pacific Time, UTC-8/-7)</option>
+                  <option value="America/Anchorage">America/Anchorage (Alaska Time, UTC-9/-8)</option>
+                  <option value="Pacific/Honolulu">Pacific/Honolulu (Hawaii Time, UTC-10)</option>
+                  <option value="America/Toronto">America/Toronto (Eastern Time, UTC-5/-4)</option>
+                  <option value="America/Vancouver">America/Vancouver (Pacific Time, UTC-8/-7)</option>
+                  <option value="America/Sao_Paulo">America/Sao_Paulo (BRT, UTC-3)</option>
+                </optgroup>
+                <optgroup label="Standard">
+                  <option value="UTC">UTC (Coordinated Universal Time)</option>
+                </optgroup>
+              </select>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
               <div class="setting-name">Calendar Template URL</div>
               <div class="setting-desc">Notion database URL for calendar events (leave blank to disable Calendar Worker).</div>
             </div>
@@ -686,17 +732,17 @@
           <div class="settings-sub-section hidden" id="cloudflare-sub">
             <div class="setting-row">
               <div class="setting-info">
-                <div class="setting-name">Cloudflare tunnel token</div>
-                <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). Optional: Leave empty for random Quick Tunnel; fill in for a permanent fixed domain.</div>
+                <div class="setting-name">Custom Cloudflare domain / URL</div>
+                <div class="setting-desc">Custom fixed domain or full URL mapped to this agent (e.g. <code>https://mail.yourdomain.com</code>).</div>
               </div>
-              <div class="setting-control"><input class="setting-input wide" type="password" id="s-cloudflareTunnelToken" data-key="cloudflare_tunnel_token" placeholder="Optional: eyJh... (Zero Trust Token)"></div>
+              <div class="setting-control"><input class="setting-input wide" type="text" id="s-cloudflareCustomHostname" data-key="cloudflare_custom_hostname" placeholder="https://mail.yourdomain.com"></div>
             </div>
             <div class="setting-row">
               <div class="setting-info">
-                <div class="setting-name">Cloudflare custom hostname</div>
-                <div class="setting-desc">Your permanent fixed domain configured in Cloudflare Zero Trust (e.g. <code>mail.yourdomain.com</code>).</div>
+                <div class="setting-name">Cloudflare tunnel token (Optional)</div>
+                <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). Optional: fill in if launching with Cloudflare connector token; leave blank for Quick Tunnel.</div>
               </div>
-              <div class="setting-control"><input class="setting-input wide" type="text" id="s-cloudflareCustomHostname" data-key="cloudflare_custom_hostname" placeholder="e.g. mail.yourdomain.com"></div>
+              <div class="setting-control"><input class="setting-input wide" type="password" id="s-cloudflareTunnelToken" data-key="cloudflare_tunnel_token" placeholder="Optional: eyJh... (Zero Trust Token)"></div>
             </div>
           </div>
           <div class="settings-sub-section hidden" id="ngrok-sub">

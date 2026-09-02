@@ -181,7 +181,29 @@ class TunnelManager:
                 logger.error(f"❌ Failed to start cloudflared with token: {e}")
                 return ""
 
-        # 2. 回退到 Cloudflare Quick Tunnel (免登录随机域名模式)
+        # 2. 用户指定了自定义 URL (例如已有独立运行的 cloudflared 服务或自定义反代)
+        if custom_hostname:
+            if not custom_hostname.startswith("http"):
+                custom_hostname = f"https://{custom_hostname}"
+            logger.info(f"ℹ️ Custom Cloudflare URL configured: {custom_hostname}")
+            try:
+                import tempfile
+                log_file_path = os.path.join(tempfile.gettempdir(), "cloudflared_quick_tunnel.log")
+                log_file = open(log_file_path, "w", encoding="utf-8")
+                self.cloudflared_process = subprocess.Popen(
+                    ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{self.port}"],
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log_file
+                )
+                logger.info(f"🚀 Started cloudflared daemon (PID: {self.cloudflared_process.pid})")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not launch local cloudflared process: {e}")
+            logger.info(f"✅ Active Cloudflare URL: {custom_hostname}")
+            logger.info(f"🔗 Notion Buttons Webhook endpoint: {custom_hostname}/?action=reply_all")
+            return custom_hostname
+
+        # 3. 回退到 Cloudflare Quick Tunnel (免登录随机域名模式)
         logger.debug("Checking cloudflared quick tunnel status...")
         try:
             import tempfile
