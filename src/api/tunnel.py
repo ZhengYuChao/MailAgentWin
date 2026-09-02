@@ -169,30 +169,43 @@ class TunnelManager:
         token = getattr(config, "cloudflare_tunnel_token", "").strip()
         custom_hostname = getattr(config, "cloudflare_custom_hostname", "").strip()
 
+        # 检查系统是否已有正在运行的 cloudflared.exe（如 Windows Service）
+        is_already_running = False
+        if sys.platform == "win32":
+            try:
+                out = subprocess.check_output('tasklist /FI "IMAGENAME eq cloudflared.exe" /NH', shell=True).decode('utf-8', errors='ignore')
+                if "cloudflared.exe" in out:
+                    is_already_running = True
+            except Exception:
+                pass
+
         # 1. 优先使用 Cloudflare Named Tunnel (Token 模式，获得固定域名)
         if token:
-            logger.info("🔒 Starting Cloudflare Named Tunnel using configured Tunnel Token...")
-            try:
-                self.cloudflared_process = subprocess.Popen(
-                    ["cloudflared", "tunnel", "run", "--token", token],
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                logger.info(f"🚀 Started cloudflared named tunnel with Token (PID: {self.cloudflared_process.pid})")
-                
-                if custom_hostname:
-                    if not custom_hostname.startswith("http"):
-                        custom_hostname = f"https://{custom_hostname}"
-                    logger.info(f"✅ Cloudflare Tunnel connected to fixed domain: {custom_hostname}")
-                    logger.info(f"🔗 Notion Buttons Webhook endpoint: {custom_hostname}/?action=reply_all")
-                    return custom_hostname
-                else:
-                    logger.info("ℹ️ Cloudflare Tunnel Token active. (Tip: Enter 'Cloudflare Custom Hostname' in Settings to display the full webhook link).")
-                    return "https://cloudflare-tunnel-active"
-            except Exception as e:
-                logger.error(f"❌ Failed to start cloudflared with token: {e}")
-                return ""
+            if is_already_running:
+                logger.info("ℹ️ Detected existing cloudflared process / Windows Service already running.")
+            else:
+                logger.info("🔒 Starting Cloudflare Named Tunnel using configured Tunnel Token...")
+                try:
+                    self.cloudflared_process = subprocess.Popen(
+                        ["cloudflared", "tunnel", "run", "--token", token],
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    logger.info(f"🚀 Started cloudflared named tunnel with Token (PID: {self.cloudflared_process.pid})")
+                except Exception as e:
+                    logger.error(f"❌ Failed to start cloudflared with token: {e}")
+                    return ""
+            
+            if custom_hostname:
+                if not custom_hostname.startswith("http"):
+                    custom_hostname = f"https://{custom_hostname}"
+                logger.info(f"✅ Cloudflare Tunnel connected to fixed domain: {custom_hostname}")
+                logger.info(f"🔗 Notion Buttons Webhook endpoint: {custom_hostname}/?action=reply_all")
+                return custom_hostname
+            else:
+                logger.info("ℹ️ Cloudflare Tunnel Token active. (Tip: Enter 'Custom Cloudflare domain / URL' in Settings to display the full webhook link).")
+                return "https://cloudflare-tunnel-active"
 
         # 2. 用户指定了自定义 URL (例如已有独立运行的 cloudflared 服务或自定义反代)
         if custom_hostname:
@@ -357,31 +370,21 @@ class TunnelManager:
                 pass
 
     def _kill_cloudflared_process(self):
-        """彻底清理 cloudflared 进程"""
+        """仅清理 MailAgent 自身启动的 cloudflared 子进程，不误杀系统独立运行的 cloudflared 服务"""
         if self.cloudflared_process:
             try:
-                self.cloudflared_process.terminate()
-                try:
-                    self.cloudflared_process.wait(timeout=2)
-                except Exception:
-                    self.cloudflared_process.kill()
+                pid = self.cloudflared_process.pid
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+                else:
+                    self.cloudflared_process.terminate()
             except Exception:
                 pass
             self.cloudflared_process = None
-        if sys.platform == "win32":
-            try:
-                subprocess.run(["taskkill", "/F", "/T", "/IM", "cloudflared.exe"], capture_output=True)
-            except Exception:
-                pass
-        else:
-            try:
-                subprocess.run(["pkill", "-f", "cloudflared"], capture_output=True)
-            except Exception:
-                pass
 
     def stop_all(self):
-        """停止所有隧道进程"""
-        logger.info("🛑 Stopping all active tunnel processes...")
+        """停止所有由 MailAgent 启动的隧道子进程"""
+        logger.info("🛑 Stopping active tunnel sub-processes...")
         self._kill_ngrok_process()
         self._kill_cloudflared_process()
 
