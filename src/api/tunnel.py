@@ -1,11 +1,14 @@
 import os
+import sys
 import time
 import json
 import subprocess
 import urllib.request
-from urllib.error import URLError
+import ssl
+from urllib.error import URLError, HTTPError
 from loguru import logger
 from src.config import config
+
 
 class TunnelManager:
     """管理 ngrok 或 cloudflared 隧道"""
@@ -14,6 +17,9 @@ class TunnelManager:
         self.port = port
         self.ngrok_process = None
         self.cloudflared_process = None
+        self.allowed_host_keyword = ""
+        self._restart_attempts = 0
+
     def get_allowed_hosts(self) -> list[str]:
         """返回所有允许的 Host 列表（包括 localhost, 127.0.0.1 以及动态探测到的 ngrok/cloudflare 域名）"""
         hosts = ["localhost", "127.0.0.1"]
@@ -38,17 +44,29 @@ class TunnelManager:
         return hosts
 
     def _test_public_url(self, url: str) -> bool:
-        """测试公网 URL 是否可达"""
+        """测试公网 URL 是否可达且后端在线"""
         logger.debug(f"Testing public URL reachability: {url}")
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'MailAgent/1.0', 'ngrok-skip-browser-warning': '1'})
-            with urllib.request.urlopen(req, timeout=5):
-                pass
-            logger.info("✅ Tunnel public endpoint is reachable (HTTP 200).")
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'MailAgent/1.0', 'ngrok-skip-browser-warning': '1'}
+            )
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+                if resp.status < 400:
+                    logger.info(f"✅ Tunnel public endpoint is reachable (HTTP {resp.status}).")
+                    return True
             return True
-        except urllib.error.HTTPError as e:
-            # 只要是 HTTPError，说明 ngrok 边缘节点接收了请求并返回了响应（如 404/502），隧道连通性没问题
-            logger.info(f"✅ Tunnel public endpoint is reachable (ngrok responded HTTP {e.code}).")
+        except HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='ignore')
+            # 检查是否为 ngrok 边缘节点离线错误 (ERR_NGROK_3200)
+            if "ERR_NGROK_" in err_body or "is offline" in err_body:
+                logger.warning(f"⚠️ Tunnel endpoint is offline on ngrok edge ({e.code} - {err_body[:120].strip()})")
+                return False
+            # 其他 HTTP 状态（400/403/404/405 等来自本地服务的响应）表示隧道连通
+            logger.info(f"✅ Tunnel public endpoint responded with HTTP {e.code}.")
             return True
         except Exception as e:
             logger.warning(f"⚠️ Tunnel public endpoint test failed: {e}")
@@ -58,6 +76,7 @@ class TunnelManager:
         logger.debug("Checking ngrok status...")
         ngrok_api_url = "http://127.0.0.1:4040/api/tunnels"
         
+        # 1. 检查已有 ngrok 隧道
         try:
             with urllib.request.urlopen(ngrok_api_url, timeout=2) as response:
                 data = json.load(response)
@@ -67,11 +86,19 @@ class TunnelManager:
                     if str(self.port) in addr or len(tunnels) == 1:
                         public_url = tunnel.get("public_url")
                         if public_url:
-                            logger.info(f"ℹ️ Found existing active ngrok tunnel: {public_url}")
-                            return public_url
+                            # 验证隧道是否真正连通（防止陈旧的离线 session）
+                            if self._test_public_url(public_url):
+                                logger.info(f"ℹ️ Found active verified ngrok tunnel: {public_url}")
+                                return public_url
+                            else:
+                                logger.warning(f"⚠️ Existing ngrok tunnel '{public_url}' is dead/offline. Terminating stale ngrok...")
+                                self._kill_ngrok_process()
+                                time.sleep(1.5)
+                                break
         except URLError:
-            logger.debug("ngrok API not reachable. Attempting to start ngrok...")
+            logger.debug("ngrok API not reachable. Starting fresh ngrok...")
 
+        # 2. 启动新 ngrok 进程
         try:
             import tempfile
             log_file_path = os.path.join(tempfile.gettempdir(), "ngrok_tunnel.log")
@@ -90,7 +117,7 @@ class TunnelManager:
             logger.info(f"🚀 Started ngrok http {self.port} (PID: {self.ngrok_process.pid})")
             
             logger.debug("Waiting for ngrok to initialize...")
-            for _ in range(10):
+            for _ in range(12):
                 time.sleep(1)
                 try:
                     with urllib.request.urlopen(ngrok_api_url, timeout=2) as response:
@@ -99,7 +126,6 @@ class TunnelManager:
                             public_url = data["tunnels"][0].get("public_url")
                             logger.info(f"✅ ngrok started successfully. Public URL: {public_url}")
                             logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
-                            self._test_public_url(public_url)
                             return public_url
                 except URLError:
                     if self.ngrok_process.poll() is not None:
@@ -162,7 +188,7 @@ class TunnelManager:
             public_url = self.ensure_cloudflare_running()
         elif provider == "ngrok":
             public_url = self.ensure_ngrok_running()
-        elif provider == "":
+        elif provider == "" or provider == "none":
             logger.info("ℹ️ REVERSE_PROXY is disabled in Settings. Tunnel will not be started.")
             return "localhost"
         else:
@@ -185,7 +211,7 @@ class TunnelManager:
                 import json
                 import ssl
                 
-                max_retries = 5
+                max_retries = 3
                 for attempt in range(1, max_retries + 1):
                     time.sleep(2.5)
                     logger.info(f"🔍 [Tunnel Self-Check] Probing public endpoint (Attempt {attempt}/{max_retries}): {public_url}?action=ping ...")
@@ -204,55 +230,91 @@ class TunnelManager:
                             if resp.status == 200:
                                 resp_body = resp.read().decode("utf-8", errors="ignore").strip()
                                 logger.info(f"✅ [Tunnel Self-Check] PASSED (HTTP {resp.status} - {resp_body})! Webhook is verified reachable from public internet.")
+                                self._restart_attempts = 0
                                 return
                             else:
                                 logger.warning(f"⚠️ [Tunnel Self-Check] Returned HTTP status: {resp.status}")
-                    except urllib.error.HTTPError as e:
+                    except HTTPError as e:
                         err_body = e.read().decode('utf-8', errors='ignore')
                         logger.error(f"❌ [Tunnel Self-Check] HTTP Error on attempt {attempt}: HTTP {e.code} - {err_body[:200]}")
                         if "ERR_NGROK_3200" in err_body or "ERR_NGROK_" in err_body:
-                            logger.error("⚠️ Detected ngrok specific error, breaking retries early to restart tunnel.")
+                            logger.warning("⚠️ Detected ngrok offline error (ERR_NGROK_3200).")
                             break
                     except Exception as e:
                         logger.error(f"❌ [Tunnel Self-Check] Connection failed on attempt {attempt}: {e}")
                 
-                logger.error("❌ [Tunnel Self-Check] Completely failed after retries. Restarting tunnel...")
-                self.stop_all()
-                time.sleep(2)
-                self.init_tunnel()
+                # 限制自检重试次数，防止无限循环
+                if self._restart_attempts < 1:
+                    self._restart_attempts += 1
+                    logger.warning(f"⚠️ [Tunnel Self-Check] Retrying tunnel restart (Attempt {self._restart_attempts}/1)...")
+                    self.stop_all()
+                    time.sleep(2)
+                    self.init_tunnel()
+                else:
+                    logger.warning("⚠️ [Tunnel Self-Check] Tunnel could not be verified online. "
+                                   "Email synchronization will continue normally. "
+                                   "(If Notion action buttons are not needed, you can set Reverse Proxy to None in Settings).")
                     
             import threading
             threading.Thread(target=self_check, daemon=True, name="TunnelSelfCheck").start()
             return self.allowed_host_keyword
         else:
             logger.error(f"❌ [Reverse Proxy] Failed to establish tunnel or obtain public URL from '{provider}'.")
-            logger.error(f"💡 Please verify that '{provider}' executable is installed and available in system PATH.")
+            logger.error(f"💡 Email synchronization will continue normally.")
             return "localhost"
 
-    def stop_all(self):
-        """停止所有隧道进程"""
+    def _kill_ngrok_process(self):
+        """彻底清理 ngrok 进程"""
         if self.ngrok_process:
-            logger.info(f"🛑 Terminating ngrok process (PID: {self.ngrok_process.pid})...")
             try:
                 self.ngrok_process.terminate()
                 try:
                     self.ngrok_process.wait(timeout=2)
                 except Exception:
                     self.ngrok_process.kill()
-            except Exception as e:
-                logger.error(f"❌ Failed to terminate ngrok: {e}")
+            except Exception:
+                pass
             self.ngrok_process = None
-                
+        if sys.platform == "win32":
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/IM", "ngrok.exe"], capture_output=True)
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(["pkill", "-f", "ngrok"], capture_output=True)
+            except Exception:
+                pass
+
+    def _kill_cloudflared_process(self):
+        """彻底清理 cloudflared 进程"""
         if self.cloudflared_process:
-            logger.info(f"🛑 Terminating cloudflared process (PID: {self.cloudflared_process.pid})...")
             try:
                 self.cloudflared_process.terminate()
                 try:
                     self.cloudflared_process.wait(timeout=2)
                 except Exception:
                     self.cloudflared_process.kill()
-            except Exception as e:
-                logger.error(f"❌ Failed to terminate cloudflared: {e}")
+            except Exception:
+                pass
             self.cloudflared_process = None
+        if sys.platform == "win32":
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/IM", "cloudflared.exe"], capture_output=True)
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(["pkill", "-f", "cloudflared"], capture_output=True)
+            except Exception:
+                pass
+
+    def stop_all(self):
+        """停止所有隧道进程"""
+        logger.info("🛑 Stopping all active tunnel processes...")
+        self._kill_ngrok_process()
+        self._kill_cloudflared_process()
+
 
 global_tunnel_manager = TunnelManager()
+
