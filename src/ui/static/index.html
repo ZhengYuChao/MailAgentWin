@@ -683,6 +683,31 @@
               </select>
             </div>
           </div>
+          <div class="settings-sub-section hidden" id="cloudflare-sub">
+            <div class="setting-row">
+              <div class="setting-info">
+                <div class="setting-name">Cloudflare tunnel token</div>
+                <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). Optional: Leave empty for random Quick Tunnel; fill in for a permanent fixed domain.</div>
+              </div>
+              <div class="setting-control"><input class="setting-input wide" type="password" id="s-cloudflareTunnelToken" data-key="cloudflare_tunnel_token" placeholder="Optional: eyJh... (Zero Trust Token)"></div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <div class="setting-name">Cloudflare custom hostname</div>
+                <div class="setting-desc">Your permanent fixed domain configured in Cloudflare Zero Trust (e.g. <code>mail.yourdomain.com</code>).</div>
+              </div>
+              <div class="setting-control"><input class="setting-input wide" type="text" id="s-cloudflareCustomHostname" data-key="cloudflare_custom_hostname" placeholder="e.g. mail.yourdomain.com"></div>
+            </div>
+          </div>
+          <div class="settings-sub-section hidden" id="ngrok-sub">
+            <div class="setting-row">
+              <div class="setting-info">
+                <div class="setting-name">ngrok custom domain</div>
+                <div class="setting-desc">Permanent static domain claimed on your ngrok dashboard (e.g. <code>yourname.ngrok-free.app</code>).</div>
+              </div>
+              <div class="setting-control"><input class="setting-input wide" type="text" id="s-ngrokCustomDomain" data-key="ngrok_custom_domain" placeholder="e.g. yourname.ngrok-free.app"></div>
+            </div>
+          </div>
           <div class="setting-row">
             <div class="setting-info">
               <div class="setting-name">New mail database ID</div>

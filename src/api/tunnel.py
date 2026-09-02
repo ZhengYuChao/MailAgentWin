@@ -108,13 +108,20 @@ class TunnelManager:
                 except Exception:
                     pass
             log_file = open(log_file_path, "w", encoding="utf-8", errors="replace")
+            
+            custom_domain = getattr(config, "ngrok_custom_domain", "").strip()
+            cmd = ["ngrok", "http", str(self.port)]
+            if custom_domain:
+                cmd.extend(["--domain", custom_domain])
+            cmd.extend(["--log", "stdout"])
+
             self.ngrok_process = subprocess.Popen(
-                ["ngrok", "http", str(self.port), "--log", "stdout"], 
+                cmd, 
                 shell=True, 
                 stdout=log_file, 
                 stderr=log_file
             )
-            logger.info(f"🚀 Started ngrok http {self.port} (PID: {self.ngrok_process.pid})")
+            logger.info(f"🚀 Started ngrok http {self.port}{' (domain: ' + custom_domain + ')' if custom_domain else ''} (PID: {self.ngrok_process.pid})")
             
             logger.debug("Waiting for ngrok to initialize...")
             for _ in range(12):
@@ -146,7 +153,36 @@ class TunnelManager:
         return ""
 
     def ensure_cloudflare_running(self) -> str:
-        logger.debug("Checking cloudflared status...")
+        token = getattr(config, "cloudflare_tunnel_token", "").strip()
+        custom_hostname = getattr(config, "cloudflare_custom_hostname", "").strip()
+
+        # 1. 优先使用 Cloudflare Named Tunnel (Token 模式，获得固定域名)
+        if token:
+            logger.info("🔒 Starting Cloudflare Named Tunnel using configured Tunnel Token...")
+            try:
+                self.cloudflared_process = subprocess.Popen(
+                    ["cloudflared", "tunnel", "run", "--token", token],
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                logger.info(f"🚀 Started cloudflared named tunnel with Token (PID: {self.cloudflared_process.pid})")
+                
+                if custom_hostname:
+                    if not custom_hostname.startswith("http"):
+                        custom_hostname = f"https://{custom_hostname}"
+                    logger.info(f"✅ Cloudflare Tunnel connected to fixed domain: {custom_hostname}")
+                    logger.info(f"🔗 Notion Buttons Webhook endpoint: {custom_hostname}/?action=reply_all")
+                    return custom_hostname
+                else:
+                    logger.info("ℹ️ Cloudflare Tunnel Token active. (Tip: Enter 'Cloudflare Custom Hostname' in Settings to display the full webhook link).")
+                    return "https://cloudflare-tunnel-active"
+            except Exception as e:
+                logger.error(f"❌ Failed to start cloudflared with token: {e}")
+                return ""
+
+        # 2. 回退到 Cloudflare Quick Tunnel (免登录随机域名模式)
+        logger.debug("Checking cloudflared quick tunnel status...")
         try:
             import tempfile
             import re

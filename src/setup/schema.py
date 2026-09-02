@@ -128,6 +128,9 @@ class MailAgentConfig(BaseModel):
 
     # ── Optional — Reverse proxy / Webhook server ────────────────────────── 
     reverse_proxy: str = ""            # ngrok / cloudflare / empty
+    cloudflare_tunnel_token: str = ""  # Cloudflare Zero Trust tunnel token (for permanent fixed domain)
+    cloudflare_custom_hostname: str = "" # Custom fixed hostname mapped to tunnel (e.g. mail.yourdomain.com)
+    ngrok_custom_domain: str = ""      # ngrok static domain (e.g. name.ngrok-free.app)
     new_mail_database_id: str = ""
 
     # ── Optional — Redis event consumer ─────────────────────────────────────

@@ -663,6 +663,18 @@ function initSettings() {
   bindToggle('s-alertEnabled', 'alert-sub');
   bindToggle('s-redisEventsEnabled', 'redis-sub');
 
+  // Reverse proxy sub-sections
+  const revSelect = document.getElementById('s-reverseProxy');
+  function updateRevSub(val) {
+    const cfSub = document.getElementById('cloudflare-sub');
+    const ngSub = document.getElementById('ngrok-sub');
+    if (cfSub) cfSub.classList.toggle('hidden', val !== 'cloudflare');
+    if (ngSub) ngSub.classList.toggle('hidden', val !== 'ngrok');
+  }
+  if (revSelect) {
+    revSelect.addEventListener('change', (e) => updateRevSub(e.target.value));
+  }
+
   // Re-auth button in Settings > AI
   let _reauthStep = 'initial';
   const reauthBtn = document.getElementById('btn-reauth-notion');
@@ -998,7 +1010,7 @@ async function loadSettings() {
     });
 
     // Update sub-section visibility
-    ['s-llmAgentEnabled', 's-feishuNotifyEnabled', 's-alertEnabled', 's-redisEventsEnabled'].forEach(id => {
+    ['s-llmAgentEnabled', 's-feishuNotifyEnabled', 's-alertEnabled', 's-redisEventsEnabled', 's-reverseProxy'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.dispatchEvent(new Event('change'));
     });
