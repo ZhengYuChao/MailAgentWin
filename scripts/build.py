@@ -27,7 +27,7 @@ def main():
     print(f"[INFO] Project Root: {root}")
     print(f"[INFO] Python: {sys.executable}")
 
-    # ── Step 1: Kill any running MailAgent.exe ──────────────────────────────────
+    # ── Step 1: Kill running MailAgent and clean stale bytecode cache ──────────
     if sys.platform == "win32":
         try:
             subprocess.run(
@@ -36,6 +36,17 @@ def main():
             )
         except Exception:
             pass
+
+    print("\n[STEP 1] Cleaning stale bytecode cache (__pycache__ and .pyc)...")
+    for pyc_dir in root.glob("**/__pycache__"):
+        if pyc_dir.is_dir():
+            shutil.rmtree(pyc_dir, ignore_errors=True)
+    for pyc_file in root.glob("**/*.pyc"):
+        try:
+            pyc_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+    print("  ✅ Stale cache cleaned.")
 
     # ── Step 2: Install all build+runtime dependencies ─────────────────────────
     print("\n[STEP 2] Installing build and runtime dependencies...")
@@ -114,7 +125,9 @@ def main():
     final_dist = root / "dist"
     spec_path = root / "mailagent.spec"
 
-    # Clean previous temp dist
+    # Clean previous temp work and dist
+    if temp_work.exists():
+        shutil.rmtree(temp_work, ignore_errors=True)
     if temp_dist.exists():
         shutil.rmtree(temp_dist, ignore_errors=True)
 

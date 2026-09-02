@@ -6,6 +6,12 @@ set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 cd /d "%ROOT%"
 
+:: ── Prevent stale bytecode cache issues across OneDrive sync ────────
+set PYTHONDONTWRITEBYTECODE=1
+echo [INFO] Cleaning up stale bytecode cache (__pycache__)...
+for /d /r "%ROOT%" %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d" 2>nul
+for /r "%ROOT%" %%f in (*.pyc *.pyo) do @if exist "%%f" del /f /q "%%f" 2>nul
+
 set "PYTHON="
 if exist "%ROOT%\.venv\Scripts\python.exe" (
     set "PYTHON=%ROOT%\.venv\Scripts\python.exe"
@@ -29,7 +35,7 @@ if exist "%ROOT%\.venv\Scripts\python.exe" (
 )
 
 echo [INFO] Running build script...
-"%PYTHON%" "%ROOT%\scripts\build.py"
+"%PYTHON%" -B "%ROOT%\scripts\build.py"
 
 if !errorlevel! NEQ 0 (
     echo.
