@@ -337,13 +337,13 @@ class OutlookComArm:
                 eid = row.Item("EntryID")
                 dt = row.Item(date_prop)
                 
-                # 转换 pywintypes.datetime 为 Python datetime（COM 返回的是本地时间）
-                # 必须使用系统本地时区（而非 config.tz），因为 COM 返回的是操作系统本地时间
-                _sys_tz = _get_system_local_tz()
+                # 转换 pywintypes.datetime 为 Python datetime
+                from src.config import config as _cfg
+                _target_tz = _cfg.tz
                 if dt:
-                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_sys_tz)
+                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_target_tz)
                 else:
-                    py_dt = datetime.min.replace(tzinfo=_sys_tz)
+                    py_dt = datetime.min.replace(tzinfo=_target_tz)
                 
                 # 兼容性列检查
                 has_sid_col = False
@@ -378,11 +378,12 @@ class OutlookComArm:
                 try:
                     item = items.Item(i)
                     dt = getattr(item, date_prop, None)
-                    _sys_tz2 = _get_system_local_tz()
+                    from src.config import config as _cfg2
+                    _target_tz2 = _cfg2.tz
                     if dt:
-                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_sys_tz2)
+                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_target_tz2)
                     else:
-                        py_dt = datetime.min.replace(tzinfo=_sys_tz2)
+                        py_dt = datetime.min.replace(tzinfo=_target_tz2)
                         
                     if return_dates:
                         results.append((item.EntryID, store_id, py_dt))
@@ -413,21 +414,17 @@ class OutlookComArm:
     def _to_iso(dt) -> str:
         if dt is None:
             return ""
-        # pywintypes.datetime 的 ReceivedTime/SentOn 返回的值是 Windows 本地时间，
-        # 但其 tzinfo 被错误地标记为 UTC (+00:00)。
-        # 必须剥离错误的 UTC tzinfo，用 Windows 系统本地时区替换，才能在后续转换中得到正确结果。
-        # 注意：这里必须用系统本地时区（而非 config.tz），因为 COM 返回的是操作系统本地时间。
-        sys_tz = _get_system_local_tz()
+        # 使用配置的时区（若为 auto 则自动识别系统时区，若用户在下拉框选择了特定时区则按所选时区生效）
+        from src.config import config
+        target_tz = config.tz
         try:
-            # 提取时间分量，忽略 pywintypes 的错误 tzinfo
             py_dt = datetime(dt.year, dt.month, dt.day,
                              dt.hour, dt.minute, dt.second,
-                             tzinfo=sys_tz)
+                             tzinfo=target_tz)
             return py_dt.isoformat()
         except Exception:
-            # 兜底：手动构建 python datetime（附加系统本地时区）
             py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                             tzinfo=sys_tz)
+                             tzinfo=target_tz)
             return py_dt.isoformat()
 
     @staticmethod
