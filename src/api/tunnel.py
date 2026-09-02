@@ -127,16 +127,21 @@ class TunnelManager:
                             logger.info(f"✅ ngrok started successfully. Public URL: {public_url}")
                             logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
                             return public_url
-                except URLError:
-                    if self.ngrok_process.poll() is not None:
-                        if os.path.exists(log_file_path):
-                            with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
-                                err_content = f.read()
-                                logger.error(f"❌ ngrok exited early with code {self.ngrok_process.returncode}: {err_content.strip()[:300]}")
-                        break
+                except Exception:
                     continue
+
+            # 检查 ngrok 是否输出错误日志
+            if os.path.exists(log_file_path):
+                with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
+                    err_content = f.read().strip()
+                    if err_content:
+                        # 查找关键错误行
+                        for line in err_content.splitlines():
+                            if "ERR_NGROK_" in line or "error" in line.lower():
+                                logger.warning(f"⚠️ ngrok diagnostic: {line.strip()[:180]}")
+                                break
         except Exception as e:
-            logger.error(f"❌ Failed to start ngrok: {e}")
+            logger.warning(f"⚠️ Failed to start ngrok: {e}")
         
         return ""
 

@@ -165,7 +165,7 @@ class Supervisor:
             registry.set_service_status("syncing")
             
             try:
-                _run_force_sync(days, registry)
+                self._run_force_sync(days)
             except Exception as e:
                 logger.error(f"Supervisor: Force sync failed: {e}")
                 registry.update("supervisor", status="abnormal", task="Force sync failed",
@@ -177,97 +177,92 @@ class Supervisor:
         
         threading.Thread(target=_sync_thread, daemon=True, name="ForceSyncThread").start()
 
+    def _run_force_sync(self, days: int) -> None:
+        """Execute the force sync: scan Outlook folders and sync each email to Notion."""
+        import asyncio
+        from datetime import datetime, timedelta
 
-def _run_force_sync(days: int, registry) -> None:
-    """Execute the force sync: scan Outlook folders and sync each email to Notion.
-    
-    Runs synchronously in a dedicated thread. Updates registry with progress.
-    """
-    import asyncio
-    from datetime import datetime, timedelta
+        async def _async_sync():
+            from src.mail.outlook_com_arm import OutlookComArm, OL_FOLDER_INBOX, OL_FOLDER_SENT
+            from src.mail.new_watcher_win import WindowsWatcher
+            from src.mail.sync_store import SyncStore
 
-    async def _async_sync():
-        from src.mail.outlook_com_arm import OutlookComArm, OL_FOLDER_INBOX, OL_FOLDER_SENT
-        from src.mail.new_watcher_win import WindowsWatcher
-        from src.mail.sync_store import SyncStore
+            logger.info(f"[FORCE-SYNC] Starting force sync for the last {days} days...")
+            registry.update("supervisor", task="Force sync: initializing Outlook COM…")
 
-        logger.info(f"[FORCE-SYNC] Starting force sync for the last {days} days...")
-        registry.update("supervisor", task="Force sync: initializing Outlook COM…")
+            sync_store = SyncStore()
+            watcher = WindowsWatcher()
+            since = datetime.now() - timedelta(days=days)
 
-        sync_store = SyncStore()
-        watcher = WindowsWatcher()
-        since = datetime.now() - timedelta(days=days)
+            # Phase 1: Scan folders
+            logger.info("[FORCE-SYNC] Phase 1: Scanning Outlook folders...")
+            registry.update("supervisor", task="Force sync: scanning Inbox…")
+            inbox_items = watcher.arm.iter_folder(OL_FOLDER_INBOX, since=since)
+            logger.info(f"[FORCE-SYNC] Found {len(inbox_items)} Inbox items.")
 
-        # Phase 1: Scan folders
-        logger.info("[FORCE-SYNC] Phase 1: Scanning Outlook folders...")
-        registry.update("supervisor", task="Force sync: scanning Inbox…")
-        inbox_items = watcher.arm.iter_folder(OL_FOLDER_INBOX, since=since)
-        logger.info(f"[FORCE-SYNC] Found {len(inbox_items)} Inbox items.")
+            registry.update("supervisor", task="Force sync: scanning Sent Items…")
+            sent_items = watcher.arm.iter_folder(OL_FOLDER_SENT, since=since)
+            logger.info(f"[FORCE-SYNC] Found {len(sent_items)} Sent items.")
 
-        registry.update("supervisor", task="Force sync: scanning Sent Items…")
-        sent_items = watcher.arm.iter_folder(OL_FOLDER_SENT, since=since)
-        logger.info(f"[FORCE-SYNC] Found {len(sent_items)} Sent items.")
+            all_items = inbox_items + sent_items
 
-        all_items = inbox_items + sent_items
+            total = len(all_items)
+            logger.info(f"[FORCE-SYNC] Phase 2: Processing {total} emails (syncing new & updating timestamps) …")
+            registry.update("supervisor", task=f"Force sync: 0/{total} emails processed",
+                            progress_current=0, progress_total=total)
 
-        total = len(all_items)
-        logger.info(f"[FORCE-SYNC] Phase 2: Processing {total} emails (syncing new & updating timestamps) …")
-        registry.update("supervisor", task=f"Force sync: 0/{total} emails processed",
-                        progress_current=0, progress_total=total)
+            if total == 0:
+                logger.info("[FORCE-SYNC] ✅ Nothing to sync — no emails found.")
+                registry.update("supervisor", task="Force sync complete (0 items)",
+                                progress_current=0, progress_total=0)
+                await watcher.close()
+                return
 
-        if total == 0:
-            logger.info("[FORCE-SYNC] ✅ Nothing to sync — no emails found.")
-            registry.update("supervisor", task="Force sync complete (0 items)",
-                            progress_current=0, progress_total=0)
+            # Phase 2: Sync new emails & update existing dates
+            synced_new = 0
+            updated_dates = 0
+            failed = 0
+            for idx, (eid, sid) in enumerate(all_items, 1):
+                try:
+                    if not sync_store.is_synced(eid):
+                        await watcher.process_mail_sync(entry_id=eid, store_id=sid, trigger_ai=False)
+                        synced_new += 1
+                    else:
+                        # Update Date property on existing Notion page to ensure correct local timezone
+                        page_id = sync_store.get_page_id(eid)
+                        if page_id:
+                            fetched = watcher.arm.get_mail_by_id(eid, sid)
+                            if fetched and fetched.date_utc:
+                                await watcher.notion_sync.client.client.pages.update(
+                                    page_id=page_id,
+                                    properties={"Date": {"date": {"start": fetched.date_utc}}}
+                                )
+                                updated_dates += 1
+                except Exception as e:
+                    failed += 1
+                    logger.error(f"[FORCE-SYNC] Failed processing {eid[:24]}: {e}")
+
+                # Update progress
+                registry.update("supervisor",
+                                task=f"Force sync: {idx}/{total} emails processed",
+                                progress_current=idx, progress_total=total)
+                
+                if idx % 10 == 0 or idx == total:
+                    logger.info(f"[FORCE-SYNC] Progress: {idx}/{total} "
+                                f"(new={synced_new}, date_updated={updated_dates}, failed={failed})")
+
             await watcher.close()
-            return
-
-        # Phase 2: Sync new emails & update existing dates
-        synced_new = 0
-        updated_dates = 0
-        failed = 0
-        for idx, (eid, sid) in enumerate(all_items, 1):
-            try:
-                if not sync_store.is_synced(eid):
-                    await watcher.process_mail_sync(entry_id=eid, store_id=sid, trigger_ai=False)
-                    synced_new += 1
-                else:
-                    # Update Date property on existing Notion page to ensure correct local timezone
-                    page_id = sync_store.get_page_id(eid)
-                    if page_id:
-                        fetched = watcher.arm.get_mail_by_id(eid, sid)
-                        if fetched and fetched.date_utc:
-                            await watcher.notion_sync.client.client.pages.update(
-                                page_id=page_id,
-                                properties={"Date": {"date": {"start": fetched.date_utc}}}
-                            )
-                            updated_dates += 1
-            except Exception as e:
-                failed += 1
-                logger.error(f"[FORCE-SYNC] Failed processing {eid[:24]}: {e}")
-
-            # Update progress
+            logger.info(f"[FORCE-SYNC] ✅ Complete. New synced: {synced_new}, "
+                         f"Dates updated: {updated_dates}, Failed: {failed}")
             registry.update("supervisor",
-                            task=f"Force sync: {idx}/{total} emails processed",
-                            progress_current=idx, progress_total=total)
-            
-            if idx % 10 == 0 or idx == total:
-                logger.info(f"[FORCE-SYNC] Progress: {idx}/{total} "
-                            f"(new={synced_new}, date_updated={updated_dates}, failed={failed})")
+                            task=f"Force sync complete ({synced_new} new, {updated_dates} updated)",
+                            progress_current=total, progress_total=total)
 
-        await watcher.close()
-        logger.info(f"[FORCE-SYNC] ✅ Complete. New synced: {synced_new}, "
-                     f"Dates updated: {updated_dates}, Failed: {failed}")
-        registry.update("supervisor",
-                        task=f"Force sync complete ({synced_new} new, {updated_dates} updated)",
-                        progress_current=total, progress_total=total)
-
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(_async_sync())
-    finally:
-        loop.close()
-
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_async_sync())
+        finally:
+            loop.close()
 
     # ── Monitor loop ─────────────────────────────────────────────────────────
 
