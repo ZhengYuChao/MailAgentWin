@@ -98,7 +98,7 @@ class MailAgentConfig(BaseModel):
     mail_account_url_prefix: str = "ews://"
     mail_inbox_name: str = "Inbox"
     mail_sent_name: str = "Sent Items"
-    app_timezone: str = "America/Los_Angeles"
+    app_timezone: str = "auto"
     applescript_timeout: int = 200
     outlook_publish_timeout_sec: int = 600
     max_attachment_size: int = 20971520  # 20 MB

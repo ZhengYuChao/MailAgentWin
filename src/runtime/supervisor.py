@@ -160,19 +160,107 @@ class Supervisor:
             time.sleep(2)
             
             # Update registry status
-            registry.update("supervisor", status="syncing", task=f"Force syncing last {days} days", reason="")
+            registry.update("supervisor", status="syncing", task=f"Force syncing last {days} days", reason="",
+                            progress_current=0, progress_total=0)
             registry.set_service_status("syncing")
             
-            logger.info("Supervisor: Starting initial_sync subprocess...")
-            p = multiprocessing.Process(target=run_initial_sync_sync, args=(days,), name="SyncWorker")
-            p.start()
-            p.join()
-            logger.info("Supervisor: initial_sync subprocess finished.")
+            try:
+                _run_force_sync(days, registry)
+            except Exception as e:
+                logger.error(f"Supervisor: Force sync failed: {e}")
+                registry.update("supervisor", status="abnormal", task="Force sync failed",
+                                reason=str(e)[:120], progress_current=0, progress_total=0)
             
             # Start everything back up
+            logger.info("Supervisor: Restarting all workers after force sync...")
             self.start_all()
         
         threading.Thread(target=_sync_thread, daemon=True, name="ForceSyncThread").start()
+
+
+def _run_force_sync(days: int, registry) -> None:
+    """Execute the force sync: scan Outlook folders and sync each email to Notion.
+    
+    Runs synchronously in a dedicated thread. Updates registry with progress.
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+
+    async def _async_sync():
+        from src.mail.outlook_com_arm import OutlookComArm, OL_FOLDER_INBOX, OL_FOLDER_SENT
+        from src.mail.new_watcher_win import WindowsWatcher
+        from src.mail.sync_store import SyncStore
+
+        logger.info(f"[FORCE-SYNC] Starting force sync for the last {days} days...")
+        registry.update("supervisor", task="Force sync: initializing Outlook COM…")
+
+        sync_store = SyncStore()
+        watcher = WindowsWatcher()
+        since = datetime.now() - timedelta(days=days)
+
+        # Phase 1: Scan folders
+        logger.info("[FORCE-SYNC] Phase 1: Scanning Outlook folders...")
+        registry.update("supervisor", task="Force sync: scanning Inbox…")
+        inbox_items = watcher.arm.iter_folder(OL_FOLDER_INBOX, since=since)
+        logger.info(f"[FORCE-SYNC] Found {len(inbox_items)} Inbox items.")
+
+        registry.update("supervisor", task="Force sync: scanning Sent Items…")
+        sent_items = watcher.arm.iter_folder(OL_FOLDER_SENT, since=since)
+        logger.info(f"[FORCE-SYNC] Found {len(sent_items)} Sent items.")
+
+        all_items = inbox_items + sent_items
+
+        # Filter out already-synced
+        unsynced = [(eid, sid) for eid, sid in all_items if not sync_store.is_synced(eid)]
+        total = len(unsynced)
+        skipped = len(all_items) - total
+
+        logger.info(f"[FORCE-SYNC] Phase 2: Syncing {total} unsynced emails "
+                     f"(skipped {skipped} already-synced) …")
+        registry.update("supervisor", task=f"Force sync: 0/{total} emails synced",
+                        progress_current=0, progress_total=total)
+
+        if total == 0:
+            logger.info("[FORCE-SYNC] ✅ Nothing to sync — all emails already in Notion.")
+            registry.update("supervisor", task="Force sync complete (0 new)",
+                            progress_current=0, progress_total=0)
+            await watcher.close()
+            return
+
+        # Phase 2: Sync each email
+        success = 0
+        failed = 0
+        for idx, (eid, sid) in enumerate(unsynced, 1):
+            try:
+                await watcher.process_mail_sync(entry_id=eid, store_id=sid, trigger_ai=False)
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"[FORCE-SYNC] Failed to sync {eid[:24]}: {e}")
+
+            # Update progress every email
+            registry.update("supervisor",
+                            task=f"Force sync: {idx}/{total} emails synced",
+                            progress_current=idx, progress_total=total)
+            
+            # Log progress every 10 emails
+            if idx % 10 == 0 or idx == total:
+                logger.info(f"[FORCE-SYNC] Progress: {idx}/{total} "
+                            f"(success={success}, failed={failed})")
+
+        await watcher.close()
+        logger.info(f"[FORCE-SYNC] ✅ Complete. Success: {success}, Failed: {failed}, "
+                     f"Skipped: {skipped}")
+        registry.update("supervisor",
+                        task=f"Force sync complete ({success} synced, {failed} failed)",
+                        progress_current=total, progress_total=total)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_async_sync())
+    finally:
+        loop.close()
+
 
     # ── Monitor loop ─────────────────────────────────────────────────────────
 

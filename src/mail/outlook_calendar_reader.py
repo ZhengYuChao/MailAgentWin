@@ -333,10 +333,12 @@ class OutlookCalendarReader:
             return None
         try:
             # pywintypes.datetime 可能带有时区信息
+            # COM 返回的是 Windows 系统本地时间，使用自动检测的系统时区
+            from src.mail.outlook_com_arm import _get_system_local_tz
             py_dt = datetime(
                 dt.year, dt.month, dt.day,
                 dt.hour, dt.minute, dt.second,
-                tzinfo=config.tz,  # Outlook COM 返回的是本地时间
+                tzinfo=_get_system_local_tz(),  # Outlook COM 返回的是本地时间
             )
             return py_dt
         except Exception:

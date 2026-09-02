@@ -10,10 +10,20 @@ import time
 import pythoncom
 import win32com.client
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo as _tzinfo_type
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from loguru import logger
+
+def _get_system_local_tz() -> _tzinfo_type:
+    """Auto-detect the Windows system local timezone.
+    
+    COM's ReceivedTime/SentOn returns Windows local time, so we must tag it
+    with the actual system timezone.
+    """
+    from src.config import get_system_local_tz
+    return get_system_local_tz()
 
 # ===== MAPI DASL 属性常量 =====
 PR_INTERNET_MESSAGE_ID = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
@@ -328,11 +338,12 @@ class OutlookComArm:
                 dt = row.Item(date_prop)
                 
                 # 转换 pywintypes.datetime 为 Python datetime（COM 返回的是本地时间）
-                from src.config import config as _cfg
+                # 必须使用系统本地时区（而非 config.tz），因为 COM 返回的是操作系统本地时间
+                _sys_tz = _get_system_local_tz()
                 if dt:
-                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_cfg.tz)
+                    py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_sys_tz)
                 else:
-                    py_dt = datetime.min.replace(tzinfo=_cfg.tz)
+                    py_dt = datetime.min.replace(tzinfo=_sys_tz)
                 
                 # 兼容性列检查
                 has_sid_col = False
@@ -367,11 +378,11 @@ class OutlookComArm:
                 try:
                     item = items.Item(i)
                     dt = getattr(item, date_prop, None)
-                    from src.config import config as _cfg2
+                    _sys_tz2 = _get_system_local_tz()
                     if dt:
-                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_cfg2.tz)
+                        py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=_sys_tz2)
                     else:
-                        py_dt = datetime.min.replace(tzinfo=_cfg2.tz)
+                        py_dt = datetime.min.replace(tzinfo=_sys_tz2)
                         
                     if return_dates:
                         results.append((item.EntryID, store_id, py_dt))
@@ -404,18 +415,19 @@ class OutlookComArm:
             return ""
         # pywintypes.datetime 的 ReceivedTime/SentOn 返回的值是 Windows 本地时间，
         # 但其 tzinfo 被错误地标记为 UTC (+00:00)。
-        # 必须剥离错误的 UTC tzinfo，用本机配置的时区替换，才能在后续转换中得到正确结果。
-        from src.config import config
+        # 必须剥离错误的 UTC tzinfo，用 Windows 系统本地时区替换，才能在后续转换中得到正确结果。
+        # 注意：这里必须用系统本地时区（而非 config.tz），因为 COM 返回的是操作系统本地时间。
+        sys_tz = _get_system_local_tz()
         try:
             # 提取时间分量，忽略 pywintypes 的错误 tzinfo
             py_dt = datetime(dt.year, dt.month, dt.day,
                              dt.hour, dt.minute, dt.second,
-                             tzinfo=config.tz)
+                             tzinfo=sys_tz)
             return py_dt.isoformat()
         except Exception:
-            # 兜底：手动构建 python datetime（附加本地时区）
+            # 兜底：手动构建 python datetime（附加系统本地时区）
             py_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                             tzinfo=config.tz)
+                             tzinfo=sys_tz)
             return py_dt.isoformat()
 
     @staticmethod

@@ -34,6 +34,66 @@ def _load_config() -> MailAgentConfig:
     return cfg
 
 
+def get_system_local_tz() -> zoneinfo.ZoneInfo:
+    """Auto-detect the host system local timezone (Windows, Mac, Linux)."""
+    try:
+        if sys.platform == 'win32':
+            try:
+                import tzlocal
+                tz_name = str(tzlocal.get_localzone_name() if hasattr(tzlocal, 'get_localzone_name') else tzlocal.get_localzone())
+                if tz_name:
+                    return zoneinfo.ZoneInfo(tz_name)
+            except Exception:
+                pass
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                   r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation") as key:
+                    tz_key_name = winreg.QueryValueEx(key, "TimeZoneKeyName")[0]
+                _WIN_TO_IANA = {
+                    "China Standard Time": "Asia/Shanghai",
+                    "Taipei Standard Time": "Asia/Taipei",
+                    "Tokyo Standard Time": "Asia/Tokyo",
+                    "Korea Standard Time": "Asia/Seoul",
+                    "Pacific Standard Time": "America/Los_Angeles",
+                    "Eastern Standard Time": "America/New_York",
+                    "Central Standard Time": "America/Chicago",
+                    "Mountain Standard Time": "America/Denver",
+                    "GMT Standard Time": "Europe/London",
+                    "W. Europe Standard Time": "Europe/Berlin",
+                    "Romance Standard Time": "Europe/Paris",
+                    "Singapore Standard Time": "Asia/Singapore",
+                    "AUS Eastern Standard Time": "Australia/Sydney",
+                    "India Standard Time": "Asia/Kolkata",
+                    "CST": "Asia/Shanghai",
+                }
+                iana_name = _WIN_TO_IANA.get(tz_key_name)
+                if iana_name:
+                    return zoneinfo.ZoneInfo(iana_name)
+            except Exception:
+                pass
+
+        # Try tzlocal generally
+        try:
+            import tzlocal
+            tz_obj = tzlocal.get_localzone()
+            tz_str = str(tz_obj)
+            if tz_str:
+                return zoneinfo.ZoneInfo(tz_str)
+        except Exception:
+            pass
+
+        # Native Python fallback via datetime
+        from datetime import datetime
+        local_tz = datetime.now().astimezone().tzinfo
+        if hasattr(local_tz, 'key') and local_tz.key:
+            return zoneinfo.ZoneInfo(local_tz.key)
+        return local_tz or zoneinfo.ZoneInfo("Asia/Shanghai")
+    except Exception as e:
+        logger.warning(f"Failed to auto-detect system timezone: {e}. Defaulting to Asia/Shanghai")
+        return zoneinfo.ZoneInfo("Asia/Shanghai")
+
+
 class _ConfigProxy:
     """
     Lazy-loading config proxy that mirrors the original src/config.py interface.
@@ -93,7 +153,14 @@ class _ConfigProxy:
     @property
     def tz(self) -> zoneinfo.ZoneInfo:
         cfg = self._ensure()
-        return zoneinfo.ZoneInfo(cfg.app_timezone)
+        tz_str = (cfg.app_timezone or "").strip()
+        if not tz_str or tz_str.lower() in ("auto", "default", "system"):
+            return get_system_local_tz()
+        try:
+            return zoneinfo.ZoneInfo(tz_str)
+        except Exception:
+            return get_system_local_tz()
 
 
 config = _ConfigProxy()
+

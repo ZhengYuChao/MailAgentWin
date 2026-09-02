@@ -30,6 +30,7 @@ let _notionAuthPolling = false;
 let _notionAuthComplete = false;
 let _setupRequestPending = false;
 let _settingsDirty = false;
+let _connectivityPollTimer = null;
 
 // ── CSRF Token Bootstrap ──────────────────────────────────────────────────────
 async function fetchCsrfToken() {
@@ -436,11 +437,15 @@ function startStatusPolling() {
   stopStatusPolling();
   pollStatus();
   _statusPollTimer = setInterval(pollStatus, 2000);
+  pollConnectivity();
+  _connectivityPollTimer = setInterval(pollConnectivity, 30000);
   document.addEventListener('visibilitychange', onVisibilityChange);
 }
 function stopStatusPolling() {
   clearInterval(_statusPollTimer);
   _statusPollTimer = null;
+  clearInterval(_connectivityPollTimer);
+  _connectivityPollTimer = null;
   document.removeEventListener('visibilitychange', onVisibilityChange);
 }
 function onVisibilityChange() {
@@ -483,13 +488,33 @@ async function pollStatus() {
     applyWorkerStates(d.workers || []);
 
     const forceSyncBtn = document.getElementById('btn-force-sync');
+    const syncProgressWrap = document.getElementById('sync-progress-wrap');
     if (forceSyncBtn) {
       if (currentServiceStatus === 'syncing') {
         forceSyncBtn.disabled = true;
         forceSyncBtn.textContent = 'Syncing…';
+        // Show progress bar if supervisor has progress data
+        const sup = (d.workers || []).find(w => w.id === 'supervisor');
+        if (sup && syncProgressWrap) {
+          const cur = sup.progressCurrent || 0;
+          const tot = sup.progressTotal || 0;
+          if (tot > 0) {
+            const pct = Math.round((cur / tot) * 100);
+            syncProgressWrap.style.display = 'block';
+            syncProgressWrap.innerHTML = `
+              <div class="sync-progress-info">${escHtml(sup.task || `${cur}/${tot}`)}</div>
+              <div class="sync-progress-bar"><div class="sync-progress-fill" style="width:${pct}%"></div></div>
+              <div class="sync-progress-pct">${pct}%</div>`;
+          } else {
+            syncProgressWrap.style.display = 'block';
+            syncProgressWrap.innerHTML = `<div class="sync-progress-info">${escHtml(sup.task || 'Syncing…')}</div>
+              <div class="sync-progress-bar"><div class="sync-progress-fill sync-progress-indeterminate"></div></div>`;
+          }
+        }
       } else {
         forceSyncBtn.disabled = false;
         forceSyncBtn.textContent = 'Force Sync';
+        if (syncProgressWrap) syncProgressWrap.style.display = 'none';
       }
     }
 
@@ -501,7 +526,7 @@ async function pollStatus() {
         const errKey = `${w.id}:${w.reason}`;
         if (!_lastNotifiedErrors[errKey]) {
           _lastNotifiedErrors[errKey] = Date.now();
-          const label = WORKER_LABELS[w.id] || w.id;
+          const label = (WORKER_CONFIG[w.id] || {}).label || w.id;
           showToast(`⚠️ ${label} issue: ${w.reason || 'Abnormal status'}`, 'error', 7000);
         }
       }
@@ -1060,6 +1085,33 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   applyTheme(next);
   apiFetch('PUT', '/api/settings', { theme: next }).catch(() => {});
+}
+
+// ── Connectivity Check ────────────────────────────────────────────────────────
+async function pollConnectivity() {
+  const container = document.getElementById('connectivity-status');
+  if (!container) return;
+  try {
+    const { ok, data } = await apiFetch('GET', '/api/runtime/connectivity', null, 10000);
+    if (!ok) {
+      container.innerHTML = '<div class="conn-item conn-error"><span class="conn-dot error"></span><span>Unable to check connectivity</span></div>';
+      return;
+    }
+    const checks = data?.data?.checks || [];
+    container.innerHTML = checks.map(c => {
+      const statusClass = c.ok ? 'ok' : 'error';
+      const icon = c.ok ? '✓' : '✕';
+      const latency = c.latency_ms != null ? ` (${c.latency_ms}ms)` : '';
+      return `<div class="conn-item conn-${statusClass}">
+        <span class="conn-dot ${statusClass}"></span>
+        <span class="conn-label">${escHtml(c.name)}</span>
+        <span class="conn-status">${icon}${latency}</span>
+        ${c.error ? `<span class="conn-error-msg">${escHtml(c.error)}</span>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = '<div class="conn-item conn-error"><span class="conn-dot error"></span><span>Connectivity check failed</span></div>';
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

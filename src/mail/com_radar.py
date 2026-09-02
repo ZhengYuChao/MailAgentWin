@@ -139,8 +139,10 @@ def _fallback_scan(lookback_seconds: int = 120):
                     if not sync_store.is_synced(eid):
                         dt = row.Item(date_prop)
                         if dt:
+                            # COM returns Windows local time, use system tz
+                            from src.mail.outlook_com_arm import _get_system_local_tz
                             ts = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-                                         tzinfo=timezone.utc).timestamp()
+                                         tzinfo=_get_system_local_tz()).timestamp()
                         else:
                             ts = time.time()
                         

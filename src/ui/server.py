@@ -455,6 +455,37 @@ async def handle_force_sync(request: web.Request) -> web.Response:
     get_supervisor().trigger_force_sync(days)
     return _ok({"message": f"Force sync initiated for the last {days} days."})
 
+
+async def handle_connectivity(request: web.Request) -> web.Response:
+    """Check internet and Notion API connectivity."""
+    import aiohttp
+    checks = []
+    
+    async def _check(name: str, urls: list[str], timeout_sec: float = 4.0):
+        result = {"name": name, "ok": False, "latency_ms": None, "error": None}
+        for url in urls:
+            try:
+                start = time.time()
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout_sec),
+                                           ssl=False) as resp:
+                        # Any HTTP status response (including 401/403/404) means network reachability
+                        result["ok"] = True
+                        result["latency_ms"] = int((time.time() - start) * 1000)
+                        result["error"] = None
+                        break
+            except asyncio.TimeoutError:
+                result["error"] = "Connection timed out"
+            except Exception as e:
+                result["error"] = str(e)[:100]
+        checks.append(result)
+    
+    await asyncio.gather(
+        _check("Internet Connection", ["https://www.msftconnecttest.com/connecttest.txt", "https://www.baidu.com", "https://www.qq.com"]),
+        _check("Notion Service", ["https://api.notion.com/v1/users/me", "https://www.notion.so"]),
+    )
+    return _ok({"checks": checks})
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 async def handle_settings_get(request: web.Request) -> web.Response:
@@ -587,6 +618,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/runtime/workers/{workerId}/restart", handle_worker_restart)
     app.router.add_post("/api/runtime/restart", handle_runtime_restart)
     app.router.add_post("/api/runtime/force_sync", handle_force_sync)
+    app.router.add_get("/api/runtime/connectivity", handle_connectivity)
 
     # Settings
     app.router.add_get("/api/settings", handle_settings_get)

@@ -55,7 +55,20 @@ class WindowsWatcher:
         self.radar_thread = start_radar()
         
         # 2. 在后台异步补查历史邮件，放入 global_task_pool (Priority 3)
+        from src.runtime.status_registry import registry
+        registry.update("mail", task=f"Catching up (last {config.startup_lookback_days} days)…")
         self.catch_up_task = asyncio.create_task(self._catch_up(days=config.startup_lookback_days))
+        
+        def _catch_up_done(fut):
+            """Log catch-up task exceptions instead of silently swallowing them."""
+            try:
+                exc = fut.exception()
+                if exc:
+                    logger.error(f"❌ Startup catch-up failed: {exc}")
+                    registry.update("mail", task="Watching inbox (catch-up failed)", reason=str(exc)[:120])
+            except asyncio.CancelledError:
+                pass
+        self.catch_up_task.add_done_callback(_catch_up_done)
         
         self.background_tasks = set()
         self.mail_sync_semaphore = asyncio.Semaphore(3)  # 最多同时处理 3 个附件上传，防止爆内/过多并发
@@ -284,19 +297,50 @@ class WindowsWatcher:
         except Exception as e:
             logger.error(f"Failed to send AI trigger signal: {e}")
 
-    async def _catch_up(self, days: int = 1):
-        """启动时补查最近的邮件，赋予低优先级排队"""
+    async def _catch_up(self, days: int = 1, _max_retries: int = 3):
+        """启动时补查最近的邮件，赋予低优先级排队。
+        
+        带重试逻辑，避免因 Outlook COM 暂时不可用导致启动同步完全失败。
+        """
+        from src.runtime.status_registry import registry
+
         if days <= 0:
             logger.info("⏭️ Startup lookback disabled. Skipping catch-up.")
             return
 
         since = datetime.now() - timedelta(days=days)
+        all_items = []
         
-        inbox_items = self.arm.iter_folder(OL_FOLDER_INBOX, since=since, return_dates=True)
-        sent_items = self.arm.iter_folder(OL_FOLDER_SENT, since=since, return_dates=True)
-        all_items = inbox_items + sent_items
+        # 带重试的 COM 扫描
+        for attempt in range(1, _max_retries + 1):
+            try:
+                logger.info(f"📬 [CATCH-UP] Scanning Outlook for emails since {since.strftime('%Y-%m-%d %H:%M')} "
+                            f"(attempt {attempt}/{_max_retries})...")
+                inbox_items = await asyncio.to_thread(
+                    self.arm.iter_folder, OL_FOLDER_INBOX, since=since, return_dates=True
+                )
+                sent_items = await asyncio.to_thread(
+                    self.arm.iter_folder, OL_FOLDER_SENT, since=since, return_dates=True
+                )
+                all_items = inbox_items + sent_items
+                logger.info(f"📬 [CATCH-UP] Outlook scan complete: found {len(inbox_items)} inbox + "
+                            f"{len(sent_items)} sent = {len(all_items)} total items.")
+                break  # 成功，跳出重试循环
+            except Exception as e:
+                logger.error(f"❌ [CATCH-UP] Outlook scan failed (attempt {attempt}/{_max_retries}): {e}")
+                if attempt < _max_retries:
+                    wait = 5 * attempt
+                    logger.info(f"⏳ [CATCH-UP] Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(f"❌ [CATCH-UP] All {_max_retries} attempts failed. "
+                                 f"Startup catch-up aborted. New emails will still be captured by COM Radar.")
+                    registry.update("mail", task="Watching inbox (catch-up failed)", reason=str(e)[:120])
+                    return
+
         if not all_items:
-            logger.info("✅ Catch-up complete: No emails found.")
+            logger.info("✅ [CATCH-UP] Complete: No emails found in the last {days} days.")
+            registry.update("mail", task="Watching inbox")
             return
 
         # 补查的任务按照收发时间排队，并加入全局任务池 (Priority 3)
@@ -314,8 +358,12 @@ class WindowsWatcher:
                 skipped_count += 1
         
         logger.info(f"✅ [CATCH-UP] Scanned {len(all_items)} items. "
-                     f"Queued {new_count} catch-up tasks (Priority LOW), "
+                     f"Queued {new_count} new sync tasks, "
                      f"skipped {skipped_count} already-synced.")
+        if new_count > 0:
+            registry.update("mail", task=f"Syncing {new_count} emails from catch-up…")
+        else:
+            registry.update("mail", task="Watching inbox (all caught up)")
 
     async def stop(self):
         """主动停止监听并清理资源"""
