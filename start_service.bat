@@ -46,6 +46,10 @@ if !errorlevel! NEQ 0 (
     "%PYTHON%" -m playwright install chromium
 )
 
+:: ── Prevent stale bytecode cache issues across OneDrive sync ────────
+set PYTHONDONTWRITEBYTECODE=1
+for /d /r "%ROOT%" %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d" 2>nul
+
 :: ── Restart settings ─────────────────────────────────────────────────────────
 set RESTART_DELAY=15
 set MAX_CRASHES=10
@@ -66,8 +70,8 @@ echo ============================================================
 echo  [%date% %time%] Starting MailAgent  ^(attempt #%CRASH_COUNT%^)
 echo ============================================================
 
-:: Run main.py — the UI server + browser open + workers all start from here
-"%PYTHON%" "%ROOT%\main.py"
+:: Run main.py with -B to ensure fresh source files are always loaded directly
+"%PYTHON%" -B "%ROOT%\main.py"
 set EXIT_CODE=!errorlevel!
 
 echo.
