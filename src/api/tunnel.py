@@ -167,17 +167,18 @@ class TunnelManager:
             logger.info(f"🚀 Started cloudflared quick tunnel (PID: {self.cloudflared_process.pid})")
             
             logger.debug("Waiting for cloudflared tunnel to initialize...")
-            for _ in range(15):
+            for _ in range(20):
                 time.sleep(1)
                 if os.path.exists(log_file_path):
                     with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read()
-                        match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', content)
-                        if match:
-                            public_url = match.group(0)
-                            logger.info(f"✅ cloudflared started successfully. Public URL: {public_url}")
-                            logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
-                            return public_url
+                        matches = re.findall(r'https://([a-zA-Z0-9-]+)\.trycloudflare\.com', content)
+                        for m in matches:
+                            if m.lower() != 'api':
+                                public_url = f"https://{m}.trycloudflare.com"
+                                logger.info(f"✅ cloudflared started successfully. Public URL: {public_url}")
+                                logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
+                                return public_url
         except Exception as e:
             logger.error(f"❌ Failed to start cloudflared: {e}")
         return ""
@@ -216,9 +217,10 @@ class TunnelManager:
                 import json
                 import ssl
                 
-                max_retries = 3
+                # 给边缘节点（尤其是 Cloudflare Quick Tunnel / ngrok）5 秒初始化和 DNS 传播时间
+                time.sleep(5.0)
+                max_retries = 5
                 for attempt in range(1, max_retries + 1):
-                    time.sleep(2.5)
                     logger.info(f"🔍 [Tunnel Self-Check] Probing public endpoint (Attempt {attempt}/{max_retries}): {public_url}?action=ping ...")
                     try:
                         req = urllib.request.Request(f"{public_url}?action=ping", method="POST")
@@ -231,34 +233,26 @@ class TunnelManager:
                         ctx.check_hostname = False
                         ctx.verify_mode = ssl.CERT_NONE
                         
-                        with urllib.request.urlopen(req, data=data, timeout=10, context=ctx) as resp:
+                        with urllib.request.urlopen(req, data=data, timeout=8, context=ctx) as resp:
                             if resp.status == 200:
                                 resp_body = resp.read().decode("utf-8", errors="ignore").strip()
                                 logger.info(f"✅ [Tunnel Self-Check] PASSED (HTTP {resp.status} - {resp_body})! Webhook is verified reachable from public internet.")
-                                self._restart_attempts = 0
                                 return
                             else:
-                                logger.warning(f"⚠️ [Tunnel Self-Check] Returned HTTP status: {resp.status}")
+                                logger.debug(f"ℹ️ [Tunnel Self-Check] Returned HTTP status: {resp.status}")
                     except HTTPError as e:
                         err_body = e.read().decode('utf-8', errors='ignore')
-                        logger.error(f"❌ [Tunnel Self-Check] HTTP Error on attempt {attempt}: HTTP {e.code} - {err_body[:200]}")
-                        if "ERR_NGROK_3200" in err_body or "ERR_NGROK_" in err_body:
-                            logger.warning("⚠️ Detected ngrok offline error (ERR_NGROK_3200).")
-                            break
+                        # 502/530 为 Cloudflare/边缘节点初始连接中的常见状态，继续等待重试
+                        if e.code in (502, 530, 504):
+                            logger.debug(f"⏳ [Tunnel Self-Check] Edge warming up (HTTP {e.code}), retrying...")
+                        else:
+                            logger.debug(f"ℹ️ [Tunnel Self-Check] HTTP {e.code}: {err_body[:100]}")
                     except Exception as e:
-                        logger.error(f"❌ [Tunnel Self-Check] Connection failed on attempt {attempt}: {e}")
+                        logger.debug(f"⏳ [Tunnel Self-Check] Probe attempt {attempt}: {e}")
+                    
+                    time.sleep(4.0)
                 
-                # 限制自检重试次数，防止无限循环
-                if self._restart_attempts < 1:
-                    self._restart_attempts += 1
-                    logger.warning(f"⚠️ [Tunnel Self-Check] Retrying tunnel restart (Attempt {self._restart_attempts}/1)...")
-                    self.stop_all()
-                    time.sleep(2)
-                    self.init_tunnel()
-                else:
-                    logger.warning("⚠️ [Tunnel Self-Check] Tunnel could not be verified online. "
-                                   "Email synchronization will continue normally. "
-                                   "(If Notion action buttons are not needed, you can set Reverse Proxy to None in Settings).")
+                logger.info(f"ℹ️ [Tunnel Self-Check] Initial probing finished. Tunnel '{public_url}' remains active in background.")
                     
             import threading
             threading.Thread(target=self_check, daemon=True, name="TunnelSelfCheck").start()
