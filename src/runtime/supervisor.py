@@ -210,49 +210,56 @@ def _run_force_sync(days: int, registry) -> None:
 
         all_items = inbox_items + sent_items
 
-        # Filter out already-synced
-        unsynced = [(eid, sid) for eid, sid in all_items if not sync_store.is_synced(eid)]
-        total = len(unsynced)
-        skipped = len(all_items) - total
-
-        logger.info(f"[FORCE-SYNC] Phase 2: Syncing {total} unsynced emails "
-                     f"(skipped {skipped} already-synced) …")
-        registry.update("supervisor", task=f"Force sync: 0/{total} emails synced",
+        total = len(all_items)
+        logger.info(f"[FORCE-SYNC] Phase 2: Processing {total} emails (syncing new & updating timestamps) …")
+        registry.update("supervisor", task=f"Force sync: 0/{total} emails processed",
                         progress_current=0, progress_total=total)
 
         if total == 0:
-            logger.info("[FORCE-SYNC] ✅ Nothing to sync — all emails already in Notion.")
-            registry.update("supervisor", task="Force sync complete (0 new)",
+            logger.info("[FORCE-SYNC] ✅ Nothing to sync — no emails found.")
+            registry.update("supervisor", task="Force sync complete (0 items)",
                             progress_current=0, progress_total=0)
             await watcher.close()
             return
 
-        # Phase 2: Sync each email
-        success = 0
+        # Phase 2: Sync new emails & update existing dates
+        synced_new = 0
+        updated_dates = 0
         failed = 0
-        for idx, (eid, sid) in enumerate(unsynced, 1):
+        for idx, (eid, sid) in enumerate(all_items, 1):
             try:
-                await watcher.process_mail_sync(entry_id=eid, store_id=sid, trigger_ai=False)
-                success += 1
+                if not sync_store.is_synced(eid):
+                    await watcher.process_mail_sync(entry_id=eid, store_id=sid, trigger_ai=False)
+                    synced_new += 1
+                else:
+                    # Update Date property on existing Notion page to ensure correct local timezone
+                    page_id = sync_store.get_page_id(eid)
+                    if page_id:
+                        fetched = watcher.arm.get_mail_by_id(eid, sid)
+                        if fetched and fetched.date_utc:
+                            await watcher.notion_sync.client.client.pages.update(
+                                page_id=page_id,
+                                properties={"Date": {"date": {"start": fetched.date_utc}}}
+                            )
+                            updated_dates += 1
             except Exception as e:
                 failed += 1
-                logger.error(f"[FORCE-SYNC] Failed to sync {eid[:24]}: {e}")
+                logger.error(f"[FORCE-SYNC] Failed processing {eid[:24]}: {e}")
 
-            # Update progress every email
+            # Update progress
             registry.update("supervisor",
-                            task=f"Force sync: {idx}/{total} emails synced",
+                            task=f"Force sync: {idx}/{total} emails processed",
                             progress_current=idx, progress_total=total)
             
-            # Log progress every 10 emails
             if idx % 10 == 0 or idx == total:
                 logger.info(f"[FORCE-SYNC] Progress: {idx}/{total} "
-                            f"(success={success}, failed={failed})")
+                            f"(new={synced_new}, date_updated={updated_dates}, failed={failed})")
 
         await watcher.close()
-        logger.info(f"[FORCE-SYNC] ✅ Complete. Success: {success}, Failed: {failed}, "
-                     f"Skipped: {skipped}")
+        logger.info(f"[FORCE-SYNC] ✅ Complete. New synced: {synced_new}, "
+                     f"Dates updated: {updated_dates}, Failed: {failed}")
         registry.update("supervisor",
-                        task=f"Force sync complete ({success} synced, {failed} failed)",
+                        task=f"Force sync complete ({synced_new} new, {updated_dates} updated)",
                         progress_current=total, progress_total=total)
 
     loop = asyncio.new_event_loop()
