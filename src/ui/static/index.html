@@ -739,10 +739,10 @@
             </div>
             <div class="setting-row">
               <div class="setting-info">
-                <div class="setting-name">Cloudflare tunnel token (Optional)</div>
-                <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). Optional: fill in if launching with Cloudflare connector token; leave blank for Quick Tunnel.</div>
+                <div class="setting-name">Cloudflare tunnel token</div>
+                <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). When provided, MailAgent will automatically launch <code>cloudflared tunnel run --token ...</code> on startup.</div>
               </div>
-              <div class="setting-control"><input class="setting-input wide" type="password" id="s-cloudflareTunnelToken" data-key="cloudflare_tunnel_token" placeholder="Optional: eyJh... (Zero Trust Token)"></div>
+              <div class="setting-control"><input class="setting-input wide" type="password" id="s-cloudflareTunnelToken" data-key="cloudflare_tunnel_token" placeholder="eyJh... (Paste your Cloudflare Tunnel Token here)"></div>
             </div>
           </div>
           <div class="settings-sub-section hidden" id="ngrok-sub">
