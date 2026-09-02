@@ -21,12 +21,25 @@ class TunnelManager:
         self._restart_attempts = 0
 
     def get_allowed_hosts(self) -> list[str]:
-        """返回所有允许的 Host 列表（包括 localhost, 127.0.0.1 以及动态探测到的 ngrok/cloudflare 域名）"""
+        """返回所有允许的 Host 列表（包括 localhost, 127.0.0.1 以及配置的自定义域名）"""
         hosts = ["localhost", "127.0.0.1"]
         if self.allowed_host_keyword and self.allowed_host_keyword != "localhost":
-            clean_host = self.allowed_host_keyword.split("//")[-1].split(":")[0].strip()
+            clean_host = self.allowed_host_keyword.split("//")[-1].split("/")[0].split(":")[0].strip()
             if clean_host not in hosts:
                 hosts.append(clean_host)
+        
+        # 自动包含用户配置的自定义域名
+        custom_cf = getattr(config, "cloudflare_custom_hostname", "").strip()
+        if custom_cf:
+            h = custom_cf.split("//")[-1].split("/")[0].split(":")[0].strip()
+            if h and h not in hosts:
+                hosts.append(h)
+
+        custom_ng = getattr(config, "ngrok_custom_domain", "").strip()
+        if custom_ng:
+            h = custom_ng.split("//")[-1].split("/")[0].split(":")[0].strip()
+            if h and h not in hosts:
+                hosts.append(h)
         
         # 兜底：如果允许列表只有 localhost，动态向 ngrok 4040 API 查询当前激活的公网域名
         try:
@@ -35,7 +48,7 @@ class TunnelManager:
                 for t in data.get("tunnels", []):
                     purl = t.get("public_url", "")
                     if purl:
-                        h = purl.split("//")[-1].split(":")[0].strip()
+                        h = purl.split("//")[-1].split("/")[0].split(":")[0].strip()
                         if h and h not in hosts:
                             hosts.append(h)
                             self.allowed_host_keyword = h
