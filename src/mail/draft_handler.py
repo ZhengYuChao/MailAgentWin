@@ -133,6 +133,7 @@ def execute_draft_action(payload: dict):
     reply_suggestion = payload.get("reply_suggestion")
     action_id = payload.get("action_id")
     
+    logger.info(f"🚀 [Outlook COM] Initiating '{final_action}' via Outlook (action_id: {action_id})...")
     pythoncom.CoInitialize()
     try:
         try:
@@ -226,13 +227,13 @@ def execute_draft_action(payload: dict):
                     if target_item: logger.debug("Email found in another folder.")
 
         if not target_item:
-            logger.error("Could not find the corresponding email in any folder.")
+            logger.error(f"❌ [Outlook COM] Could not find the corresponding email in any Outlook folder for Message ID: {message_id}")
             return
 
         try:
             eid = target_item.EntryID
             target_item = ns.GetItemFromID(eid)
-            logger.debug("Re-fetched item by EntryID.")
+            logger.info(f"📧 [Outlook COM] Target email located: '{target_item.Subject}' (from: {getattr(target_item, 'SenderEmailAddress', 'N/A')})")
         except Exception as e:
             logger.warning(f"Failed to re-fetch item by EntryID: {e}")
 
@@ -355,9 +356,9 @@ def execute_draft_action(payload: dict):
             raise publish_result["error"]
         else:
             if final_action == "save":
-                logger.info(f"✅ Draft created successfully (action_id: {action_id}).")
+                logger.info(f"✅ [Outlook COM] Draft created and saved successfully in Outlook (action_id: {action_id}).")
             else:
-                logger.info(f"✅ Email sent successfully (action_id: {action_id}).")
+                logger.info(f"✅ [Outlook COM] Email '{getattr(target_item, 'Subject', '')}' sent successfully via Outlook (action_id: {action_id}).")
 
     except Exception as e:
         logger.error(f"Failed to process Outlook email: {e}")

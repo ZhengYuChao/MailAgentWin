@@ -40,13 +40,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
         
         # ── 1. Host Validation ────────────────────────────────────────────────
         host_header = self.headers.get('Host', '').split(':')[0].strip().lower()
-        logger.debug(f"Received incoming request from {client_ip}:{client_port} | Host: {host_header}")
+        logger.info(f"🌐 [Webhook API] Incoming {self.command} '{self.path}' from {client_ip}:{client_port} (Host: {host_header})")
         
         allowed_hosts = [h.lower() for h in global_tunnel_manager.get_allowed_hosts()]
         is_allowed = any(ah in host_header for ah in allowed_hosts)
         
         if not is_allowed:
-            logger.warning(f"⛔ Rejected – Host '{host_header}' does not match allowed hosts: {allowed_hosts}")
+            logger.warning(f"⛔ [Webhook API] Rejected – Host '{host_header}' does not match allowed hosts: {allowed_hosts}")
             self.send_response(403)
             self.end_headers()
             self.wfile.write(b"Forbidden")
@@ -61,14 +61,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 body_bytes = self.rfile.read(content_length)
                 body = body_bytes.decode("utf-8", errors="replace").strip()
             except Exception as e:
-                logger.error(f"❌ Error reading body: {e}")
+                logger.error(f"❌ [Webhook API] Error reading request body: {e}")
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(b"Bad Request")
                 return
 
         if not body:
-            logger.warning("⚠️  Request body is empty, ignoring.")
+            logger.warning(f"⚠️ [Webhook API] Request body from {client_ip} is empty, ignoring.")
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Ignored: Empty body")
@@ -77,23 +77,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # ── 3. Payload Validation ──────────────────────────────────────────────
         try:
             data = json.loads(body)
-            logger.debug(f"Raw Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
+            logger.debug(f"[Webhook API] Raw Payload: {json.dumps(data, ensure_ascii=False)}")
         except json.JSONDecodeError as e:
-            logger.error(f"❌ Invalid JSON data: {e}")
+            logger.error(f"❌ [Webhook API] Invalid JSON data: {e}")
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Invalid JSON")
             return
             
         if data.get("type") == "ping" or url_action == "ping":
-            logger.info("🏓 Ping received, tunnel self-check passed. Returning 200 OK.")
+            logger.info(f"🏓 [Webhook API] Self-check Ping received from {client_ip}. Returning 200 OK (pong).")
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"pong")
             return
             
         action_id = data.get("source", {}).get("action_id", "N/A")
-        logger.info(f"📥 Received Webhook from {client_ip}:{client_port}. action_id: {action_id}")
         
         # Database ID Validation (accept both email sync DB and new mail DB)
         try:
@@ -109,23 +108,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
             
             is_new_mail = False
             if clean_received_id == expected_db_id:
-                logger.debug(f"Database ID validated (email sync DB): {clean_received_id}")
+                logger.debug(f"[Webhook API] Database ID validated (email sync DB): {clean_received_id}")
             elif new_mail_db_id and clean_received_id == new_mail_db_id:
                 is_new_mail = True
-                logger.debug(f"Database ID validated (new mail DB): {clean_received_id}")
+                logger.debug(f"[Webhook API] Database ID validated (new mail DB): {clean_received_id}")
             else:
-                logger.error(f"⛔ Database ID mismatch! Expected: {expected_db_id} or {new_mail_db_id}, Received: {clean_received_id}")
+                logger.error(f"⛔ [Webhook API] Database ID mismatch! Expected: {expected_db_id} or {new_mail_db_id}, Received: {clean_received_id}")
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Database mismatch")
                 return
         except Exception as e:
             is_new_mail = False
-            logger.warning(f"⚠️ Database ID validation skipped due to error: {e}")
+            logger.warning(f"⚠️ [Webhook API] Database ID validation skipped due to error: {e}")
 
         properties = data.get("data", {}).get("properties", {})
         if not properties:
-            logger.error("Invalid data format: Missing 'properties' field.")
+            logger.error("❌ [Webhook API] Invalid data format: Missing 'properties' field.")
             self.send_response(400)
             self.end_headers()
             return
@@ -133,7 +132,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # ── New Mail flow (from new_mail database) ─────────────────────────────
         if is_new_mail:
             page_id = data.get("data", {}).get("id", "")
-            # Subject may be named 'Subject' or 'Name' depending on database setup
             subject_prop = properties.get("Subject") or properties.get("Name")
             to_prop = properties.get("To")
             cc_prop = properties.get("CC More") or properties.get("CC")
@@ -149,19 +147,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if not to: invalid_fields.append("To")
 
             if invalid_fields:
-                logger.error(f"[NewMail] Validation failed: Fields are empty {', '.join(invalid_fields)}")
+                logger.error(f"❌ [Webhook API - NewMail] Validation failed: Fields are empty {', '.join(invalid_fields)}")
                 self.send_response(400)
                 self.end_headers()
                 return
 
-            logger.info(f"✅ [NewMail] Validation passed. Subject: {subject[:40]}, To: {to[:40]}, Email Body: {len(email_body)} chars")
-            
             final_action = "new_mail"
             if url_action in ["new_mail_draft", "draft", "save", "create_draft"]:
                 final_action = "new_mail_draft"
             elif url_action == "send":
                 final_action = "new_mail"
                 
+            logger.info(f"✉️ [Webhook API - NewMail] Action: '{final_action}', Subject: '{subject}', To: '{to}', Body: {len(email_body)} chars (action_id: {action_id})")
+            
             payload = {
                 "action": final_action,
                 "action_id": action_id,
@@ -172,6 +170,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "page_id": page_id,
             }
             global_task_pool.add_task(TaskType.WEBHOOK_DRAFT, TaskPriority.HIGH, payload)
+            logger.info(f"⚡ [Webhook API - NewMail] Task enqueued to Task Pool (Priority HIGH).")
 
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
@@ -200,7 +199,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if not thread_id: invalid_fields.append("Thread ID")
 
         if invalid_fields:
-            logger.error(f"Validation failed: Fields are empty {', '.join(invalid_fields)}")
+            logger.error(f"❌ [Webhook API] Validation failed: Fields are empty {', '.join(invalid_fields)}")
             self.send_response(400)
             self.end_headers()
             return
@@ -215,7 +214,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             elif url_action in ["draft", "create_draft"]:
                 final_action = "save"
             else:
-                logger.error(f"❌ Unknown action in URL '{url_action}'. Aborting.")
+                logger.error(f"❌ [Webhook API] Unknown action in URL query: '{url_action}'. Aborting.")
                 self.send_response(400)
                 self.end_headers()
                 return
@@ -229,20 +228,26 @@ class WebhookHandler(BaseHTTPRequestHandler):
             elif prop_action == "forward":
                 final_action = "forward"
             else:
-                logger.error(f"❌ Unknown action in Draft Action property '{prop_action}' and no URL action provided. Aborting.")
+                logger.error(f"❌ [Webhook API] Unknown action in Draft Action property '{prop_action}' and no URL action provided.")
                 self.send_response(400)
                 self.end_headers()
                 return
 
         # Reply Suggestion is required for reply/reply_all, but optional for forward/save
         if final_action in ("reply", "reply_all") and not reply_suggestion:
-            logger.error(f"Validation failed: Reply Suggestion is empty (required for {final_action})")
+            logger.error(f"❌ [Webhook API] Validation failed: 'Reply Suggestion' is empty (required for {final_action})")
             self.send_response(400)
             self.end_headers()
             return
 
-        # ── 4. Enqueue Task (恢复优雅的任务池架构) ──────────────────────────────────
-        logger.info(f"✅ Validation passed. Action: {final_action}, message_id: {message_id[:20]}...")
+        # ── 4. Enqueue Task ──────────────────────────────────
+        logger.info(f"📨 [Webhook API] Validated Notion Button Action: '{final_action}' (action_id: {action_id})")
+        logger.info(f"📋 [Webhook API] Message ID: {message_id[:40]} | Thread ID: {thread_id[:30]}")
+        if reply_to: logger.info(f"👤 [Webhook API] Reply-To: {reply_to}")
+        if forward_to: logger.info(f"👥 [Webhook API] Forward-To: {forward_to}")
+        if cc_more: logger.info(f"📎 [Webhook API] CC: {cc_more}")
+        if reply_suggestion: logger.info(f"💬 [Webhook API] Reply Content ({len(reply_suggestion)} chars): '{reply_suggestion[:100]}...'")
+        
         payload = {
             "message_id": message_id,
             "thread_id": thread_id,
@@ -256,6 +261,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         
         # 加入任务池（最高优先级 Priority 1），交由不阻塞的主循环去异步分发
         global_task_pool.add_task(TaskType.WEBHOOK_DRAFT, TaskPriority.HIGH, payload)
+        logger.info(f"⚡ [Webhook API] Enqueued High-Priority task to Task Pool for immediate Outlook COM execution.")
 
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
