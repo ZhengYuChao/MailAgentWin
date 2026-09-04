@@ -230,11 +230,13 @@ async def handle_notion_auth_start(request: web.Request) -> web.Response:
         cfg = load_config()
         target_url = cfg.notion_ai_page_url or "https://app.notion.com/ai"
 
+        init_timeout_ms = (getattr(cfg, "browser_init_timeout_sec", 180) or 180) * 1000
+
         async def _open_and_prefill():
             try:
                 if user_email:
                     logger.info(f"🌐 Opening Notion login with prefilled email: {user_email}")
-                    await page.goto("https://www.notion.so/login", timeout=60000)
+                    await page.goto("https://www.notion.so/login", timeout=init_timeout_ms)
                     for sel in ['input[type="email"]', '#notion-email-input-1', 'input[name="email"]', 'input[placeholder*="email" i]']:
                         try:
                             el = await page.wait_for_selector(sel, timeout=4000)
@@ -246,7 +248,7 @@ async def handle_notion_auth_start(request: web.Request) -> web.Response:
                             continue
                 else:
                     logger.info(f"🌐 Opening Notion page at: {target_url}")
-                    await page.goto(target_url, timeout=60000)
+                    await page.goto(target_url, timeout=init_timeout_ms)
             except Exception as ex:
                 logger.debug(f"Navigation / prefill: {ex}")
 

@@ -35,6 +35,7 @@ class MailAgentConfig(BaseModel):
     debounce_force_sec: int = 600
     notion_ai_fallback_wait_sec: int = 120
     notion_ai_wait_timeout: int = 600
+    browser_init_timeout_sec: int = 180
     notion_ai_trigger_historical: bool = True
 
     # AI model selection (dynamically discovered by headless browser on startup)

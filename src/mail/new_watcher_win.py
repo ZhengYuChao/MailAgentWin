@@ -293,7 +293,13 @@ class WindowsWatcher:
         if self.ai_trigger_queue is None:
             return
         try:
-            self.ai_trigger_queue.put_nowait({"type": "email_synced", "ts": time.time()})
+            # 统计邮件任务池中剩余待同步积压（队列中 + 正在执行中的同步任务）
+            backlog = global_task_pool.qsize() + max(0, getattr(self, "_active_sync_tasks", 0) - 1)
+            self.ai_trigger_queue.put_nowait({
+                "type": "email_synced",
+                "ts": time.time(),
+                "mail_backlog": backlog
+            })
         except Exception as e:
             logger.error(f"Failed to send AI trigger signal: {e}")
 

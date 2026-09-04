@@ -37,11 +37,33 @@ class AIController:
         self._ai_task_queue = asyncio.Queue()
         self._last_heartbeat_log_time = 0.0
         
+        # 邮件同步积压状态
+        self._mail_sync_backlog = 0                # 邮件任务池中仍在排队等待同步的邮件数
+        
         # Playwright 持续化实例
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
+
+    def get_backlog_summary(self) -> tuple[int, int]:
+        """
+        计算当前积压邮件总数与剩余 Notion AI 待办任务数。
+        Returns:
+            (total_backlog_emails, pending_ai_chats)
+        """
+        batch_size = max(1, getattr(config, "notion_ai_batch_size", 2) or 2)
+        # AIWorker 队列中已排队的 Chat 任务数
+        queued_chats = self._ai_task_queue.qsize()
+        # 已同步到 Notion 但还在当前批次等待（零头）的邮件数
+        unbatched_emails = self._uploaded_in_batch
+        # 邮件任务池中仍在排队等待同步到 Notion 的邮件数
+        mail_sync_backlog = getattr(self, "_mail_sync_backlog", 0)
+        # 估算总积压邮件数（待同步 + 本批待AI + 队列中待处理）
+        total_backlog_emails = mail_sync_backlog + unbatched_emails + (queued_chats * batch_size)
+        # 剩余 Notion AI Chat 待办任务数（排队中 + 零头是否还需要 1 次）
+        pending_ai_chats = queued_chats + (1 if unbatched_emails > 0 else 0)
+        return total_backlog_emails, pending_ai_chats
 
     async def _ensure_browser(self):
         """确保浏览器处于健康可用状态。任何组件异常都会触发完整重建，带重试机制。"""
@@ -111,8 +133,9 @@ class AIController:
                     with open(user_agent_path, "r", encoding="utf-8") as f:
                         context_args["user_agent"] = f.read().strip()
 
+                init_timeout_sec = getattr(config, "browser_init_timeout_sec", 180) or 180
                 self.context = await self.browser.new_context(**context_args)
-                self.context.set_default_timeout(60000)
+                self.context.set_default_timeout(init_timeout_sec * 1000)
                 self.page = await self.context.new_page()
                 await Stealth().apply_stealth_async(self.page)
 
@@ -122,11 +145,13 @@ class AIController:
                     await self.close()
                     return False
 
-                logger.info(f"🌐 Accessing Notion page via headless browser: {page_url}")
-                await self.page.goto(page_url, wait_until="load")
+                logger.info(f"🌐 Accessing Notion page via headless browser: {page_url} (timeout: {init_timeout_sec}s)")
+                await self.page.goto(page_url, wait_until="load", timeout=init_timeout_sec * 1000)
                 logger.info("✅ Initial page loaded, waiting 8 seconds to ensure routing and AI panel are fully initialized...")
                 await asyncio.sleep(8)
-                self._prompts_in_current_chat = 0
+                # 仅在初始未计数时设为 0；若是会话上限重启浏览器，则保留已递增的当前轮次计数 (1)
+                if not hasattr(self, "_prompts_in_current_chat") or self._prompts_in_current_chat <= 0:
+                    self._prompts_in_current_chat = 0
                 self._in_daily_summary_chat = False
                 # Proactively discover and sync available AI models from Notion UI on startup
                 try:
@@ -159,6 +184,13 @@ class AIController:
             return
 
         try:
+            total_backlog, pending_ai = self.get_backlog_summary()
+            logger.info(
+                f"🚀 [Notion AI Trigger] 准备触发: '{subject}' | "
+                f"任务池待处理积压邮件: {total_backlog} 封 (待同步: {getattr(self, '_mail_sync_backlog', 0)}, 本批已同步待AI: {self._uploaded_in_batch}) | "
+                f"AIWorker 待办队列: 剩余 {pending_ai} 次 Notion AI Chat"
+            )
+
             restart_browser = False
             need_new_chat = False
 
@@ -197,7 +229,7 @@ class AIController:
 
             self._last_ai_trigger_time = time.time()
             try:
-                await self._do_trigger_ai(action=action, restart_browser=restart_browser, need_new_chat=need_new_chat)
+                await self._do_trigger_ai(action=action, restart_browser=restart_browser, need_new_chat=need_new_chat, subject=subject)
             except Exception as e:
                 import traceback
                 logger.error(f"❌ Failed to trigger Notion AI:\n{traceback.format_exc()}")
@@ -225,8 +257,12 @@ class AIController:
 
                 subject = item.get("subject", "Unnamed Task")
                 action = item.get("action", None)
-                remaining_q = self._ai_task_queue.qsize()
-                logger.info(f"▶️ Executing AI task: '{subject}' (Queued tasks remaining: {remaining_q})")
+                total_backlog, pending_ai = self.get_backlog_summary()
+                logger.info(
+                    f"▶️ Executing AI task: '{subject}' | "
+                    f"任务池待处理积压邮件: {total_backlog} 封 | "
+                    f"AIWorker 待办队列: 剩余 {pending_ai} 次 Notion AI Chat"
+                )
                 try:
                     await self.execute_ai_trigger(subject, action=action)
                 except Exception as e:
@@ -264,12 +300,19 @@ class AIController:
                             drained += 1
                             self._uploaded_in_batch += 1
                             self._last_email_sync_time = msg.get("ts", time.time())
+                            if "mail_backlog" in msg:
+                                self._mail_sync_backlog = msg["mail_backlog"]
                             self._has_pending_ai_trigger = True
                         except QueueEmpty:
                             break
 
                 if drained > 0:
-                    logger.info(f"📬 Received {drained} AI trigger signal(s). Current backlog/progress: {self._uploaded_in_batch} mail(s).")
+                    total_backlog, pending_ai = self.get_backlog_summary()
+                    logger.info(
+                        f"📬 Received {drained} AI trigger signal(s). Current backlog: {total_backlog} mail(s) "
+                        f"(待同步: {getattr(self, '_mail_sync_backlog', 0)}, 本批已同步: {self._uploaded_in_batch}) | "
+                        f"AIWorker 待办队列: {pending_ai} 次 Chat."
+                    )
 
                 now = time.time()
                 batch_size = max(1, getattr(config, "notion_ai_batch_size", 2) or 2)
@@ -280,12 +323,14 @@ class AIController:
                     processed_mails = num_batches * batch_size
                     self._uploaded_in_batch %= batch_size
                     self._has_pending_ai_trigger = (self._uploaded_in_batch > 0)
-                    logger.info(
-                        f"🚨 Batch threshold reached: splitting {processed_mails} mail(s) into {num_batches} Notion AI task(s) "
-                        f"(batch size: {batch_size}, {self._uploaded_in_batch} remainder)."
-                    )
                     for i in range(num_batches):
                         await self.queue_ai_trigger(f"Batch ({i+1}/{num_batches}) - {batch_size} mails")
+                    total_backlog, pending_ai = self.get_backlog_summary()
+                    logger.info(
+                        f"🚨 Batch threshold reached: split {processed_mails} mail(s) into {num_batches} Notion AI task(s) "
+                        f"(batch size: {batch_size}, {self._uploaded_in_batch} remainder). "
+                        f"[积压统计: 总积压 {total_backlog} 封邮件, AIWorker 待办队列: {pending_ai} 次 Chat]"
+                    )
 
                 # 场景 2：静默期到达，处理不足一个批次的零头邮件
                 elif self._has_pending_ai_trigger and self._last_email_sync_time > 0:
@@ -293,32 +338,40 @@ class AIController:
                     quiet_sec = getattr(config, "debounce_quiet_sec", 30) or 30
                     if quiet_elapsed >= quiet_sec:
                         rem = self._uploaded_in_batch
-                        logger.info(
-                            f"🔔 Quiet period of {quiet_sec}s reached with no new emails. "
-                            f"Triggering Notion AI for remainder ({rem} mail(s))..."
-                        )
                         self._has_pending_ai_trigger = False
                         self._uploaded_in_batch = 0
                         await self.queue_ai_trigger(f"Debounced Batch ({rem} mail(s))")
+                        total_backlog, pending_ai = self.get_backlog_summary()
+                        logger.info(
+                            f"🔔 Quiet period of {quiet_sec}s reached with no new emails. "
+                            f"Triggered Notion AI for remainder ({rem} mail(s)). "
+                            f"[积压统计: 总积压 {total_backlog} 封邮件, AIWorker 待办队列: {pending_ai} 次 Chat]"
+                        )
 
                 # 场景 3：强制时间间隔（无新邮件时每隔一段时间自动触发 Notion AI 检查）
                 force_elapsed = now - self._last_ai_trigger_time
                 force_sec = getattr(config, "debounce_force_sec", 600) or 600
                 if force_sec > 0 and force_elapsed >= force_sec:
-                    logger.info(
-                        f"🔔 Periodic check interval of {force_sec}s reached with no recent AI activity. "
-                        f"Triggering Notion AI to inspect database for unhandled emails..."
-                    )
                     self._has_pending_ai_trigger = False
                     self._uploaded_in_batch = 0
                     self._last_ai_trigger_time = now
                     await self.queue_ai_trigger(f"Forced Periodic Check ({force_sec}s timeout)")
+                    total_backlog, pending_ai = self.get_backlog_summary()
+                    logger.info(
+                        f"🔔 Periodic check interval of {force_sec}s reached with no recent AI activity. "
+                        f"Triggered Notion AI to inspect database for unhandled emails. "
+                        f"(待处理邮件总积压: {total_backlog} 封, AIWorker 待办队列: {pending_ai} 次 Chat)"
+                    )
 
                 # 心跳日志：当系统处于空闲时，每隔 180 秒打印一次心跳提示，明确告知下一次自动检查倒计时
                 elif force_sec > 0 and (now - self._last_heartbeat_log_time >= 180):
                     if not self._has_pending_ai_trigger and self._ai_task_queue.empty():
                         rem_sec = max(0, int(force_sec - force_elapsed))
-                        logger.info(f"⏳ [AIWorker] Idle: waiting for new emails. Next periodic AI check in {rem_sec}s.")
+                        total_backlog, pending_ai = self.get_backlog_summary()
+                        logger.info(
+                            f"⏳ [AIWorker] Idle: waiting for new emails. Next periodic AI check in {rem_sec}s. "
+                            f"(当前待处理积压邮件: {total_backlog} 封, 待办 AI Chat: {pending_ai} 次)"
+                        )
                         self._last_heartbeat_log_time = now
 
                 await asyncio.sleep(1)  # 每秒检查一次
@@ -746,7 +799,7 @@ class AIController:
             await self._focus_and_activate_chat()
             return False
 
-    async def _do_trigger_ai(self, action: str = None, restart_browser: bool = False, need_new_chat: bool = False):
+    async def _do_trigger_ai(self, action: str = None, restart_browser: bool = False, need_new_chat: bool = False, subject: str = None):
         """实际在持久化的浏览器中输入 Prompt"""
         try:
             if restart_browser:
@@ -822,6 +875,15 @@ class AIController:
                             prompt_text = f.read().strip()
                 if not prompt_text:
                     prompt_text = "Summarize this email and suggest a reply."
+
+                # 动态联动：将 Prompt 模板中的【本轮处理数量 N】：X 自动更新为当前批次实际数量
+                if prompt_text and "【本轮处理数量" in prompt_text:
+                    import re
+                    curr_batch_size = getattr(config, "notion_ai_batch_size", 2) or 2
+                    m = re.search(r"\((\d+)\s+mail", subject or "")
+                    target_n = int(m.group(1)) if m else curr_batch_size
+                    prompt_text = re.sub(r"(【本轮处理数量\s*N】\s*[:：]\s*)\d+", rf"\g<1>{target_n}", prompt_text)
+                    logger.debug(f"📝 Prompt target email count dynamically set to N={target_n}")
                     
             # 2. 移除可能拦截点击的弹窗与遮罩层
             await self._close_all_overlays()

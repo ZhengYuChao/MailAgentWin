@@ -106,7 +106,7 @@ class TestAIBacklogAndTimeout(unittest.IsolatedAsyncioTestCase):
         controller = AIController()
         history = []
 
-        async def fake_do_trigger(action=None, restart_browser=False, need_new_chat=False):
+        async def fake_do_trigger(action=None, restart_browser=False, need_new_chat=False, **kwargs):
             history.append({
                 "need_new_chat": need_new_chat,
                 "prompts_count": controller._prompts_in_current_chat,
@@ -134,7 +134,7 @@ class TestAIBacklogAndTimeout(unittest.IsolatedAsyncioTestCase):
         controller = AIController()
         history = []
 
-        async def fake_do_trigger(action=None, restart_browser=False, need_new_chat=False):
+        async def fake_do_trigger(action=None, restart_browser=False, need_new_chat=False, **kwargs):
             history.append({
                 "action": action,
                 "need_new_chat": need_new_chat,
@@ -233,10 +233,32 @@ class TestAIBacklogAndTimeout(unittest.IsolatedAsyncioTestCase):
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with patch("time.time", side_effect=[100.0, 100.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0, 110.0]):
-                # 2. 模拟 need_new_chat = True：应该调用 _click_new_chat 而不是 page.goto
                 await controller._do_trigger_ai(action=None, restart_browser=False, need_new_chat=True)
                 controller._click_new_chat.assert_called_once()
                 mock_page.goto.assert_not_called()
+
+    async def test_backlog_summary_and_pending_chats(self):
+        """验证 get_backlog_summary 正确统计任务池积压邮件数与待办 Notion AI Chat 数"""
+        controller = AIController()
+        controller._mail_sync_backlog = 15  # 待从 Outlook 同步的邮件数
+        controller._uploaded_in_batch = 1   # 本批已同步待 AI 处理的零头邮件数
+
+        # 压入 2 个 Chat 批次任务 (每个代表 2 封)
+        await controller.queue_ai_trigger("Batch (1/2) - 2 mails")
+        await controller.queue_ai_trigger("Batch (2/2) - 2 mails")
+
+        total_backlog, pending_chats = controller.get_backlog_summary()
+        # 总积压 = 15 (待同步) + 1 (零头待AI) + 2 * 2 (队列中 2 批) = 20 封
+        self.assertEqual(total_backlog, 20)
+        # 待办 Chat = 2 (队列中) + 1 (零头 1 封需要 1 次 chat) = 3 次 Chat
+        self.assertEqual(pending_chats, 3)
+
+    def test_browser_init_timeout_config(self):
+        """验证 browser_init_timeout_sec 在 Schema 和 Config 中的默认值是 180 秒"""
+        from src.setup.schema import MailAgentConfig
+        cfg = MailAgentConfig()
+        self.assertEqual(cfg.browser_init_timeout_sec, 180)
+        self.assertEqual(cfg.notion_ai_max_new_chats_before_browser_restart, 8)
 
 
 if __name__ == "__main__":
