@@ -43,8 +43,9 @@ def run_ai_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
 
     async def _run():
         registry.update("ai", status="normal", task="Waiting for emails")
-        # 启动防抖循环和每日定时调度
+        # 启动防抖循环、任务消费循环和每日定时调度
         debounce_task = asyncio.create_task(ai_controller.debounce_loop())
+        worker_task = asyncio.create_task(ai_controller.task_worker_loop())
         daily_task = asyncio.create_task(daily_scheduler_loop(ai_controller, shutdown_event))
 
         try:
@@ -56,8 +57,9 @@ def run_ai_worker(ai_trigger_queue: MPQueue, shutdown_event: MPEvent):
         finally:
             logger.info("AIWorker shutting down, cancelling tasks...")
             debounce_task.cancel()
+            worker_task.cancel()
             daily_task.cancel()
-            for task in [debounce_task, daily_task]:
+            for task in [debounce_task, worker_task, daily_task]:
                 try:
                     await task
                 except asyncio.CancelledError:

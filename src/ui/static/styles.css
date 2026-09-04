@@ -852,6 +852,10 @@ html, body {
 #stab-logs #log-search:focus {
   border-color: var(--action-ink);
 }
+#stab-logs #btn-log-autoscroll {
+  white-space: nowrap;
+  min-width: 110px;
+}
 #stab-logs .logs-output {
   width: 100%;
   height: calc(100vh - 240px);

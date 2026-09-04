@@ -28,9 +28,14 @@ class AIController:
         self._prompts_in_current_chat = 0          # 当前 Notion AI 对话内的 prompt 提交计数 (上限如 5 次)
         self._new_chats_count = 0                  # 已开启的 New Chat 会话计数 (上限如 8 次后重启浏览器)
         self._ai_chats_in_session = 0              # 兼容字段
+        self._in_daily_summary_chat = False        # 标记当前是否处于每日总结的独立会话中
         
         # 并发控制 —— 使用 asyncio.Lock 确保 AI 触发严格串行排队
         self._lock = asyncio.Lock()
+        
+        # 任务执行队列 —— 顺序消费，防止并发冲突及锁等待超时丢失任务
+        self._ai_task_queue = asyncio.Queue()
+        self._last_heartbeat_log_time = 0.0
         
         # Playwright 持续化实例
         self.playwright = None
@@ -121,6 +126,8 @@ class AIController:
                 await self.page.goto(page_url, wait_until="load")
                 logger.info("✅ Initial page loaded, waiting 8 seconds to ensure routing and AI panel are fully initialized...")
                 await asyncio.sleep(8)
+                self._prompts_in_current_chat = 0
+                self._in_daily_summary_chat = False
                 # Proactively discover and sync available AI models from Notion UI on startup
                 try:
                     await self.sync_available_models()
@@ -158,27 +165,35 @@ class AIController:
             if action == "scheduled_daily_sync":
                 # 每日总结使用独立对话
                 need_new_chat = True
+                self._in_daily_summary_chat = True
             else:
-                self._prompts_in_current_chat += 1
-                max_prompts = getattr(config, "notion_ai_max_chats_per_session", 5) or 5
-                max_new_chats = getattr(config, "notion_ai_max_new_chats_before_browser_restart", 8) or 8
-
-                # 判定是否需要开启 New Chat（满 max_prompts 次 prompt 时）
-                if self._prompts_in_current_chat > max_prompts:
+                if getattr(self, "_in_daily_summary_chat", False):
+                    # 上一轮是每日总结会话，切回普通邮件处理时开启新对话
+                    need_new_chat = True
                     self._prompts_in_current_chat = 1
-                    self._new_chats_count += 1
-
-                    if self._new_chats_count >= max_new_chats:
-                        # 满 8 次 New Chat，彻底重启无头浏览器释放资源
-                        self._new_chats_count = 0
-                        restart_browser = True
-                        logger.info(f"🔄 Reached browser session limit ({max_new_chats} new chats). Restarting browser for memory cleanup...")
-                    else:
-                        # 满 5 次 Prompt，仅在同一浏览器内开启新对话
-                        need_new_chat = True
-                        logger.info(f"🆕 Reached chat prompt limit ({max_prompts} in current chat). Opening New Chat ({self._new_chats_count}/{max_new_chats})...")
+                    self._in_daily_summary_chat = False
+                    logger.info("🆕 Switching from daily summary to email processing. Opening fresh chat session...")
                 else:
-                    logger.info(f"💬 Submitting prompt to current chat (Prompt {self._prompts_in_current_chat}/{max_prompts} in current session)...")
+                    self._prompts_in_current_chat += 1
+                    max_prompts = getattr(config, "notion_ai_max_chats_per_session", 5) or 5
+                    max_new_chats = getattr(config, "notion_ai_max_new_chats_before_browser_restart", 8) or 8
+
+                    # 判定是否需要开启 New Chat（满 max_prompts 次 prompt 时）
+                    if self._prompts_in_current_chat > max_prompts:
+                        self._prompts_in_current_chat = 1
+                        self._new_chats_count += 1
+
+                        if self._new_chats_count >= max_new_chats:
+                            # 满 8 次 New Chat，彻底重启无头浏览器释放资源
+                            self._new_chats_count = 0
+                            restart_browser = True
+                            logger.info(f"🔄 Reached browser session limit ({max_new_chats} new chats). Restarting browser for memory cleanup...")
+                        else:
+                            # 满 5 次 Prompt，仅在同一浏览器内开启新对话
+                            need_new_chat = True
+                            logger.info(f"🆕 Reached chat prompt limit ({max_prompts} in current chat). Opening New Chat ({self._new_chats_count}/{max_new_chats})...")
+                    else:
+                        logger.info(f"💬 Submitting prompt to current chat (Prompt {self._prompts_in_current_chat}/{max_prompts} in current session)...")
 
             self._last_ai_trigger_time = time.time()
             try:
@@ -189,12 +204,49 @@ class AIController:
         finally:
             self._lock.release()
 
+    async def queue_ai_trigger(self, subject: str, action: str = None):
+        """将 AI 触发任务放入顺序执行队列"""
+        await self._ai_task_queue.put({"subject": subject, "action": action})
+        q_len = self._ai_task_queue.qsize()
+        logger.debug(f"📥 Queued AI trigger: '{subject}' (Current queue size: {q_len})")
+
+    async def task_worker_loop(self):
+        """后台顺序消费队列中的 AI 任务，确保 Notion AI 触发严格串行执行且不丢弃任何任务。"""
+        logger.info("🤖 Notion AI sequential task worker started.")
+        while True:
+            try:
+                if self._shutdown_event and self._shutdown_event.is_set():
+                    break
+                try:
+                    # 使用 1 秒超时获取任务，以便响应 shutdown_event
+                    item = await asyncio.wait_for(self._ai_task_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                subject = item.get("subject", "Unnamed Task")
+                action = item.get("action", None)
+                remaining_q = self._ai_task_queue.qsize()
+                logger.info(f"▶️ Executing AI task: '{subject}' (Queued tasks remaining: {remaining_q})")
+                try:
+                    await self.execute_ai_trigger(subject, action=action)
+                except Exception as e:
+                    logger.error(f"❌ Error during AI task execution '{subject}': {e}")
+                finally:
+                    self._ai_task_queue.task_done()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in task_worker_loop: {e}")
+                await asyncio.sleep(2)
+        logger.info("Notion AI sequential task worker stopped.")
+
     async def debounce_loop(self):
         """后台防抖循环：从 IPC 队列消费 AI 触发信号，结合防抖和强制间隔触发 Notion AI"""
         logger.info("⏰ Notion AI debounce loop started.")
 
         # 启动时触发一次 AI（处理重启前积压的未处理邮件，保证不漏触发）
-        asyncio.create_task(self.execute_ai_trigger("Startup Batch"))
+        await self.queue_ai_trigger("Startup Batch")
 
         while True:
             try:
@@ -217,38 +269,57 @@ class AIController:
                             break
 
                 if drained > 0:
-                    logger.debug(f"Received {drained} AI trigger signal(s). Batch progress: {self._uploaded_in_batch}/{config.notion_ai_batch_size}")
+                    logger.info(f"📬 Received {drained} AI trigger signal(s). Current backlog/progress: {self._uploaded_in_batch} mail(s).")
 
                 now = time.time()
+                batch_size = max(1, getattr(config, "notion_ai_batch_size", 2) or 2)
 
-                # 场景 1：批次阈值达到，立即触发
-                if self._uploaded_in_batch >= config.notion_ai_batch_size:
-                    logger.info(f"🚨 Batch threshold reached ({self._uploaded_in_batch}/{config.notion_ai_batch_size} mails). "
-                               f"Force triggering Notion AI chat!")
-                    self._has_pending_ai_trigger = False
-                    self._uploaded_in_batch = 0
-                    asyncio.create_task(self.execute_ai_trigger(
-                        f"Batch Threshold ({config.notion_ai_batch_size} mails)"))
+                # 场景 1：达到或超过批次阈值（支持大量积压邮件按每 batch_size 封拆分为多个任务顺序入队）
+                if self._uploaded_in_batch >= batch_size:
+                    num_batches = self._uploaded_in_batch // batch_size
+                    processed_mails = num_batches * batch_size
+                    self._uploaded_in_batch %= batch_size
+                    self._has_pending_ai_trigger = (self._uploaded_in_batch > 0)
+                    logger.info(
+                        f"🚨 Batch threshold reached: splitting {processed_mails} mail(s) into {num_batches} Notion AI task(s) "
+                        f"(batch size: {batch_size}, {self._uploaded_in_batch} remainder)."
+                    )
+                    for i in range(num_batches):
+                        await self.queue_ai_trigger(f"Batch ({i+1}/{num_batches}) - {batch_size} mails")
 
-                # 场景 2：静默期到达，触发
+                # 场景 2：静默期到达，处理不足一个批次的零头邮件
                 elif self._has_pending_ai_trigger and self._last_email_sync_time > 0:
                     quiet_elapsed = now - self._last_email_sync_time
-                    if quiet_elapsed >= config.debounce_quiet_sec:
-                        logger.info(f"🔔 Quiet period of {config.debounce_quiet_sec}s reached "
-                                   f"with no new emails. Triggering Notion AI...")
+                    quiet_sec = getattr(config, "debounce_quiet_sec", 30) or 30
+                    if quiet_elapsed >= quiet_sec:
+                        rem = self._uploaded_in_batch
+                        logger.info(
+                            f"🔔 Quiet period of {quiet_sec}s reached with no new emails. "
+                            f"Triggering Notion AI for remainder ({rem} mail(s))..."
+                        )
                         self._has_pending_ai_trigger = False
                         self._uploaded_in_batch = 0
-                        asyncio.create_task(self.execute_ai_trigger("Debounced Batch"))
+                        await self.queue_ai_trigger(f"Debounced Batch ({rem} mail(s))")
 
-                # 场景 3：强制时间间隔（独立于场景 1/2）
+                # 场景 3：强制时间间隔（无新邮件时每隔一段时间自动触发 Notion AI 检查）
                 force_elapsed = now - self._last_ai_trigger_time
-                if force_elapsed >= config.debounce_force_sec:
-                    logger.info(f"🔔 Force trigger interval of {config.debounce_force_sec}s reached. "
-                               f"Triggering Notion AI...")
+                force_sec = getattr(config, "debounce_force_sec", 600) or 600
+                if force_sec > 0 and force_elapsed >= force_sec:
+                    logger.info(
+                        f"🔔 Periodic check interval of {force_sec}s reached with no recent AI activity. "
+                        f"Triggering Notion AI to inspect database for unhandled emails..."
+                    )
                     self._has_pending_ai_trigger = False
                     self._uploaded_in_batch = 0
                     self._last_ai_trigger_time = now
-                    asyncio.create_task(self.execute_ai_trigger("Forced Interval Batch"))
+                    await self.queue_ai_trigger(f"Forced Periodic Check ({force_sec}s timeout)")
+
+                # 心跳日志：当系统处于空闲时，每隔 180 秒打印一次心跳提示，明确告知下一次自动检查倒计时
+                elif force_sec > 0 and (now - self._last_heartbeat_log_time >= 180):
+                    if not self._has_pending_ai_trigger and self._ai_task_queue.empty():
+                        rem_sec = max(0, int(force_sec - force_elapsed))
+                        logger.info(f"⏳ [AIWorker] Idle: waiting for new emails. Next periodic AI check in {rem_sec}s.")
+                        self._last_heartbeat_log_time = now
 
                 await asyncio.sleep(1)  # 每秒检查一次
 
@@ -259,20 +330,49 @@ class AIController:
                 await asyncio.sleep(5)
 
     async def _click_new_chat(self):
-        """点击左下角的 New Chat 按钮启动独立对话"""
+        """点击 New Chat 按钮启动独立对话（支持中英文界面及多种特征定位）"""
         try:
             if not self.page:
                 return False
             await self._close_all_overlays()
             logger.info("🆕 Clicking 'New chat' button to start an isolated session...")
-            new_chat_btn = self.page.locator("div[role='button']:has-text('New chat'), button:has-text('New chat'), [aria-label='New chat']").first
-            if await new_chat_btn.is_visible(timeout=5000):
-                await new_chat_btn.click(force=True, delay=100)
-                await asyncio.sleep(random.uniform(1.5, 2.5))
-                return True
-            else:
-                logger.warning("⚠️ 'New chat' button not found, continuing in current view.")
-                return False
+
+            selectors = [
+                "[data-testid='new-chat-button']",
+                "[data-testid='unified-chat-new-chat-button']",
+                "[data-testid='chat-new-chat-button']",
+                "[aria-label*='New chat' i]",
+                "[aria-label*='新对话']",
+                "[aria-label*='新建对话']",
+                "[aria-label*='新建聊天']",
+                "[aria-label*='开启新对话']",
+                "[title*='New chat' i]",
+                "[title*='新对话']",
+                "[title*='新建对话']",
+                "[title*='新建聊天']",
+                "button:has-text('New chat')",
+                "div[role='button']:has-text('New chat')",
+                "button:has-text('新对话')",
+                "div[role='button']:has-text('新对话')",
+                "button:has-text('新建对话')",
+                "div[role='button']:has-text('新建对话')",
+                "button:has-text('新建聊天')",
+                "div[role='button']:has-text('新建聊天')",
+            ]
+
+            for sel in selectors:
+                try:
+                    btn = self.page.locator(sel).first
+                    if await btn.count() > 0 and await btn.is_visible():
+                        await btn.click(force=True, delay=100)
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
+                        logger.info(f"✅ Clicked 'New chat' button via selector: {sel}")
+                        return True
+                except Exception:
+                    continue
+
+            logger.warning("⚠️ 'New chat' button not found via UI selectors.")
+            return False
         except Exception as e:
             logger.warning(f"⚠️ Failed to click 'New chat': {e}")
             return False
@@ -669,15 +769,39 @@ class AIController:
             # 确认当前是否处于 Notion AI 页面
             current_url = page.url or ""
             target_url = config.notion_ai_page_url or "https://app.notion.com/ai"
-            if "notion.com/ai" not in current_url and "notion.so/ai" not in current_url:
-                logger.info(f"🌐 Navigating to Notion AI chat window: {target_url}")
+            max_prompts = getattr(config, "notion_ai_max_chats_per_session", 5) or 5
+            is_on_notion = ("notion.com" in current_url or "notion.so" in current_url) and not current_url.startswith("about:")
+
+            if not is_on_notion:
+                # 页面不在 Notion 域内（如初次启动或意外脱离），导航到目标页面
+                logger.info(f"🌐 Not on Notion domain (current: '{current_url}'). Navigating to: {target_url}")
                 await page.goto(target_url, wait_until="load")
                 await asyncio.sleep(4)
                 need_new_chat = False
-
-            if need_new_chat:
-                await self._click_new_chat()
-                await asyncio.sleep(1.0)
+            elif need_new_chat:
+                # 处于 Notion 域内且需要开启新对话（满 5 次 prompt 或每日任务）：
+                # 优先点击 UI 上的 New Chat 按钮，如未找到则通过重新导航到 target_url 作为保底
+                logger.info(f"🆕 Opening a new chat (prompt limit {max_prompts} reached or new session requested)...")
+                clicked = await self._click_new_chat()
+                if not clicked:
+                    logger.info(f"🌐 'New chat' button not clickable, navigating to {target_url} to open a fresh chat...")
+                    await page.goto(target_url, wait_until="load")
+                    await asyncio.sleep(4)
+                else:
+                    await asyncio.sleep(1.0)
+            else:
+                # 处于 Notion 域内且复用当前会话（第 1 ~ 5 次 Prompt）：
+                # 严格复用当前会话！绝不调用 page.goto(target_url)！
+                logger.info(f"💬 Continuing in current chat session on {current_url} (Prompt {self._prompts_in_current_chat}/{max_prompts})...")
+                # 确保输入框可见且可用，若被遮罩阻挡则先清除
+                chat_input = await self._get_chat_input()
+                if not chat_input:
+                    await self._close_all_overlays()
+                    chat_input = await self._get_chat_input()
+                if not chat_input:
+                    logger.warning(f"⚠️ Chat input not visible in current session ({current_url}), recovering via {target_url}...")
+                    await page.goto(target_url, wait_until="load")
+                    await asyncio.sleep(4)
 
             # 1. 读取 prompt
             if action == "scheduled_daily_sync":

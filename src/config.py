@@ -132,14 +132,14 @@ class _ConfigProxy:
     def __getattr__(self, name: str):
         cfg = self._ensure()
         # Direct fields
-        if name in cfg.model_fields:
+        if name in type(cfg).model_fields:
             return getattr(cfg, name)
         # Properties (aliases)
         if hasattr(cfg, name):
             return getattr(cfg, name)
         # Case-insensitive lookup (e.g. NOTION_AI_PAGE_URL -> notion_ai_page_url)
         lower_name = name.lower()
-        if lower_name in cfg.model_fields:
+        if lower_name in type(cfg).model_fields:
             return getattr(cfg, lower_name)
         if hasattr(cfg, lower_name):
             return getattr(cfg, lower_name)

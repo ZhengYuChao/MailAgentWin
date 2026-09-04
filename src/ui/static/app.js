@@ -780,17 +780,32 @@ function initSettings() {
 // ── Logs tab in Settings ──────────────────────────────────────────────────────
 let _logsPollTimer = null;
 let _logsPaused = false;
+let _autoScrollEnabled = true;
 let _rawLogLines = [];
 let _logsCursor = -1;
+
+function updateAutoScrollButton() {
+  const autoScrollBtn = document.getElementById('btn-log-autoscroll');
+  if (!autoScrollBtn) return;
+  if (_autoScrollEnabled) {
+    autoScrollBtn.textContent = 'Auto-scroll: ON';
+    autoScrollBtn.className = 'btn btn-primary active';
+  } else {
+    autoScrollBtn.textContent = 'Auto-scroll: OFF';
+    autoScrollBtn.className = 'btn btn-outline';
+  }
+}
 
 function initLogsViewer() {
   const filterWorker = document.getElementById('log-filter-worker');
   const searchInput = document.getElementById('log-search');
   const pauseBtn = document.getElementById('btn-log-pause');
+  const autoScrollBtn = document.getElementById('btn-log-autoscroll');
   const clearBtn = document.getElementById('btn-log-clear');
+  const container = document.getElementById('logs-output');
 
-  if (filterWorker) filterWorker.addEventListener('change', renderLogs);
-  if (searchInput) searchInput.addEventListener('input', renderLogs);
+  if (filterWorker) filterWorker.addEventListener('change', () => renderLogs(true));
+  if (searchInput) searchInput.addEventListener('input', () => renderLogs(true));
   if (pauseBtn) {
     pauseBtn.addEventListener('click', () => {
       _logsPaused = !_logsPaused;
@@ -798,12 +813,40 @@ function initLogsViewer() {
       pauseBtn.className = _logsPaused ? 'btn btn-primary' : 'btn btn-outline';
     });
   }
+  if (autoScrollBtn) {
+    autoScrollBtn.addEventListener('click', () => {
+      _autoScrollEnabled = !_autoScrollEnabled;
+      updateAutoScrollButton();
+      if (_autoScrollEnabled && container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       _rawLogLines = [];
-      renderLogs();
+      renderLogs(true);
     });
   }
+
+  // Detect user manual scroll to turn auto-scroll off/on automatically
+  if (container) {
+    container.addEventListener('scroll', () => {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distanceFromBottom > 60) {
+        if (_autoScrollEnabled) {
+          _autoScrollEnabled = false;
+          updateAutoScrollButton();
+        }
+      } else if (distanceFromBottom <= 20) {
+        if (!_autoScrollEnabled) {
+          _autoScrollEnabled = true;
+          updateAutoScrollButton();
+        }
+      }
+    });
+  }
+  updateAutoScrollButton();
 }
 
 async function fetchLogs() {
@@ -815,21 +858,26 @@ async function fetchLogs() {
     const { lines, cursor } = data.data;
 
     if (_logsCursor <= 0) {
-      // First load: replace with tail lines
+      // First load: replace with tail lines and scroll to bottom
       _rawLogLines = lines || [];
+      _logsCursor = cursor;
+      renderLogs(true);
     } else if (lines && lines.length > 0) {
       // Incremental: append new lines
       _rawLogLines.push(...lines);
       if (_rawLogLines.length > 1000) {
         _rawLogLines = _rawLogLines.slice(-1000);
       }
+      _logsCursor = cursor;
+      renderLogs(false);
+    } else {
+      // No new lines: just update cursor without touching DOM
+      _logsCursor = cursor;
     }
-    _logsCursor = cursor;
-    renderLogs();
   } catch (e) { /* silent */ }
 }
 
-function renderLogs() {
+function renderLogs(forceScrollBottom = false) {
   const container = document.getElementById('logs-output');
   if (!container) return;
 
@@ -847,13 +895,11 @@ function renderLogs() {
     return;
   }
 
-  // Prevent disrupting user's text selection
+  // Prevent disrupting user's text selection if actively selecting
   const selection = window.getSelection();
   if (selection && selection.toString().length > 0 && container.contains(selection.anchorNode)) {
     return; // defer render until selection is cleared
   }
-
-  const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 40;
 
   container.innerHTML = filtered.map(line => {
     let levelClass = 'info';
@@ -867,14 +913,18 @@ function renderLogs() {
     return `<div class="log-line ${levelClass}">${escHtml(line)}</div>`;
   }).join('');
 
-  if (wasAtBottom && !_logsPaused) {
-    container.scrollTop = container.scrollHeight;
+  if (forceScrollBottom || (_autoScrollEnabled && !_logsPaused)) {
+    requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
   }
 }
 
 function startLogsPolling() {
   stopLogsPolling();
   _logsCursor = -1; // Force tail on open
+  _autoScrollEnabled = true;
+  updateAutoScrollButton();
   fetchLogs();
   _logsPollTimer = setInterval(fetchLogs, 1000);
 }
@@ -903,6 +953,10 @@ function activateSettingsTab(tab) {
   // Poll logs only when Logs tab is active
   if (tab === 'logs') {
     startLogsPolling();
+    setTimeout(() => {
+      const container = document.getElementById('logs-output');
+      if (container) container.scrollTop = container.scrollHeight;
+    }, 100);
   } else {
     stopLogsPolling();
   }

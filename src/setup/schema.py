@@ -32,10 +32,10 @@ class MailAgentConfig(BaseModel):
     notion_ai_max_chats_per_session: int = 5
     notion_ai_max_new_chats_before_browser_restart: int = 8
     debounce_quiet_sec: int = 30
-    debounce_force_sec: int = 1800
+    debounce_force_sec: int = 600
     notion_ai_fallback_wait_sec: int = 120
     notion_ai_wait_timeout: int = 600
-    notion_ai_trigger_historical: bool = False
+    notion_ai_trigger_historical: bool = True
 
     # AI model selection (dynamically discovered by headless browser on startup)
     ai_model_email_sync: str = "Auto"

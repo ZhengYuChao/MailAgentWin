@@ -112,7 +112,7 @@ class WindowsWatcher:
                             # 中低优先级：邮件同步 (使用 Semaphore 限制并发)
                             entry_id = t.payload.get("entry_id")
                             store_id = t.payload.get("store_id")
-                            trigger_ai = (t.priority_level <= TaskPriority.MEDIUM.value) or config.notion_ai_trigger_historical
+                            trigger_ai = bool(config.ai_enabled and (t.priority_level <= TaskPriority.LOW.value or config.notion_ai_trigger_historical))
                             async with self.mail_sync_semaphore:
                                 await self.process_mail_sync(entry_id, store_id=store_id, trigger_ai=trigger_ai)
                                 
