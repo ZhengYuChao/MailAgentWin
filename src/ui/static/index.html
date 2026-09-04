@@ -725,20 +725,21 @@
             <div class="setting-control">
               <select class="setting-input" id="s-reverseProxy" data-key="reverse_proxy">
                 <option value="">Disabled</option>
+                <option value="custom">Custom / External Proxy (自定义代理)</option>
+                <option value="cloudflare">Cloudflare Tunnel</option>
                 <option value="ngrok">ngrok</option>
-                <option value="cloudflare">Cloudflare</option>
               </select>
             </div>
           </div>
           <div class="settings-sub-section hidden" id="cloudflare-sub">
             <div class="setting-row">
               <div class="setting-info">
-                <div class="setting-name">Custom Cloudflare domain / URL</div>
-                <div class="setting-desc">Custom fixed domain or full URL mapped to this agent (e.g. <code>https://mail.yourdomain.com</code>).</div>
+                <div class="setting-name">Custom proxy domain / URL</div>
+                <div class="setting-desc">Custom fixed domain or full URL mapped to this agent (e.g. <code>https://mailagent.zhengyuchao.top</code>).</div>
               </div>
-              <div class="setting-control"><input class="setting-input wide" type="text" id="s-cloudflareCustomHostname" data-key="cloudflare_custom_hostname" placeholder="https://mail.yourdomain.com"></div>
+              <div class="setting-control"><input class="setting-input wide" type="text" id="s-cloudflareCustomHostname" data-key="cloudflare_custom_hostname" placeholder="https://mailagent.zhengyuchao.top"></div>
             </div>
-            <div class="setting-row">
+            <div class="setting-row" id="cf-token-row">
               <div class="setting-info">
                 <div class="setting-name">Cloudflare tunnel token</div>
                 <div class="setting-desc">Zero Trust Tunnel Token (<code>eyJh...</code>). When provided, MailAgent will automatically launch <code>cloudflared tunnel run --token ...</code> on startup.</div>

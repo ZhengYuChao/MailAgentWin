@@ -207,29 +207,16 @@ class TunnelManager:
                 logger.info("ℹ️ Cloudflare Tunnel Token active. (Tip: Enter 'Custom Cloudflare domain / URL' in Settings to display the full webhook link).")
                 return "https://cloudflare-tunnel-active"
 
-        # 2. 用户指定了自定义 URL (例如已有独立运行的 cloudflared 服务或自定义反代)
+        # 2. 用户指定了自定义 URL (例如已有独立运行的 cloudflared 服务、Nginx 或自定义反向代理)
         if custom_hostname:
             if not custom_hostname.startswith("http"):
                 custom_hostname = f"https://{custom_hostname}"
-            logger.info(f"ℹ️ Custom Cloudflare URL configured: {custom_hostname}")
-            try:
-                import tempfile
-                log_file_path = os.path.join(tempfile.gettempdir(), "cloudflared_quick_tunnel.log")
-                log_file = open(log_file_path, "w", encoding="utf-8")
-                self.cloudflared_process = subprocess.Popen(
-                    ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{self.port}"],
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=log_file
-                )
-                logger.info(f"🚀 Started cloudflared daemon (PID: {self.cloudflared_process.pid})")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not launch local cloudflared process: {e}")
-            logger.info(f"✅ Active Cloudflare URL: {custom_hostname}")
+            logger.info(f"ℹ️ Custom proxy domain configured: {custom_hostname} (no local quick tunnel needed)")
+            logger.info(f"✅ Active Webhook URL: {custom_hostname}")
             logger.info(f"🔗 Notion Buttons Webhook endpoint: {custom_hostname}/?action=reply_all")
             return custom_hostname
 
-        # 3. 回退到 Cloudflare Quick Tunnel (免登录随机域名模式)
+        # 3. 回退到 Cloudflare Quick Tunnel (免登录临时测试域名，仅在未配置自定义域名或 Token 时作为新手备用)
         logger.debug("Checking cloudflared quick tunnel status...")
         try:
             import tempfile
@@ -260,7 +247,7 @@ class TunnelManager:
                         for m in matches:
                             if m.lower() != 'api':
                                 public_url = f"https://{m}.trycloudflare.com"
-                                logger.info(f"✅ cloudflared started successfully. Public URL: {public_url}")
+                                logger.info(f"✅ cloudflared quick tunnel started. Public URL: {public_url}")
                                 logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
                                 return public_url
         except Exception as e:
@@ -276,6 +263,17 @@ class TunnelManager:
         
         if provider == "cloudflare":
             public_url = self.ensure_cloudflare_running()
+        elif provider == "custom":
+            custom_hostname = getattr(config, "cloudflare_custom_hostname", "").strip()
+            if custom_hostname:
+                if not custom_hostname.startswith("http"):
+                    custom_hostname = f"https://{custom_hostname}"
+                public_url = custom_hostname
+                logger.info(f"✅ Active Custom Webhook URL: {public_url} (external proxy)")
+                logger.info(f"🔗 Notion Buttons Webhook endpoint: {public_url}/?action=reply_all")
+            else:
+                logger.warning("⚠️ REVERSE_PROXY is set to 'custom', but no custom domain is configured in Settings!")
+                return "localhost"
         elif provider == "ngrok":
             public_url = self.ensure_ngrok_running()
         elif provider == "" or provider == "none":

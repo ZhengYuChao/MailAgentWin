@@ -668,7 +668,9 @@ function initSettings() {
   function updateRevSub(val) {
     const cfSub = document.getElementById('cloudflare-sub');
     const ngSub = document.getElementById('ngrok-sub');
-    if (cfSub) cfSub.classList.toggle('hidden', val !== 'cloudflare');
+    const cfTokenRow = document.getElementById('cf-token-row');
+    if (cfSub) cfSub.classList.toggle('hidden', val !== 'cloudflare' && val !== 'custom');
+    if (cfTokenRow) cfTokenRow.classList.toggle('hidden', val === 'custom');
     if (ngSub) ngSub.classList.toggle('hidden', val !== 'ngrok');
   }
   if (revSelect) {
